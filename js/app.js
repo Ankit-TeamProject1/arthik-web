@@ -1,7 +1,7 @@
 import { APP_VERSION, AUTO_LOCK_MS } from './config.js';
 import * as dbx from './dropbox.js';
 import { encrypt, decrypt, isEncrypted } from './crypto.js';
-import { utcMonth, CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, setMask, money, pct, fmtDate } from './model.js';
+import { utcMonth, CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, setMask, money, pct, fmtDate, metalLabel } from './model.js';
 
 const root = document.getElementById('app');
 const S = { pw: null, enc: null, rev: null, modified: null, data: null, bookIdx: 0, offline: false, error: '', busy: false };
@@ -206,7 +206,7 @@ function route() {
   const nav = h('nav', { class: 'nav', 'aria-label': 'Main' }, NAV.map(n => h('a', { href: '#/' + n.id, class: n.id === active ? 'on' : '', 'aria-current': n.id === active ? 'page' : null }, h('span', { class: 'dot' }), n.label)));
   const brandRow = () => h('div', { class: 'brand sm' }, h('img', { class: 'logo', src: 'icons/logo.png', alt: '', width: 40, height: 40 }), h('div', { class: 'brandname' }, 'Arthik'));
   const side = h('aside', { class: 'side' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker()), nav.cloneNode(true));
-  mount(h('div', { class: 'layout' }, side, h('main', { class: 'main' }, h('div', { class: 'mbar' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker())), body, (isExp && canEdit() ? h('button', { class: 'fab', 'aria-label': 'Add an entry', onclick: () => openEntry(null) }, '+') : null), h('div', { class: 'foot' }, 'Arthik web ' + APP_VERSION + (canEdit() ? ' · editing on' : ' · view only') + (matchMedia('(hover:hover)').matches ? ' · shortcuts: N new entry, / search, H hide values' : ''))), nav));
+  mount(h('div', { class: 'layout' }, side, h('main', { class: 'main' }, h('div', { class: 'mbar' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker())), body, (isExp && canEdit() ? h('button', { class: 'fab', 'aria-label': 'Add an entry', onclick: () => openEntry(null) }, '+') : null), h('div', { class: 'foot' }, 'Arthik web ' + APP_VERSION + (canEdit() ? ' · editing on' : ' · view only') + (matchMedia('(hover:hover)').matches ? (isExp ? (canEdit() ? ' · shortcuts: N new entry, / search' : ' · shortcut: / search') : ' · shortcut: H hide values') : ''))), nav));
   window.scrollTo(0, 0);
 }
 addEventListener('hashchange', () => { if (S.data) route(); });
@@ -713,23 +713,76 @@ const WSPEC = {
       F.text('bankName', 'Bank name', { req: 1, ph: 'e.g. HDFC Savings' }), F.text('accountDetails', 'Account details (optional)', { ph: 'e.g. xx1234' }), F.num('currentBalance', 'Current balance', { req: 1, rs: 1, zero: 1 }) ],
     make: () => ({ bankName: '', accountDetails: '', currentBalance: '', isArchived: false }) },
 };
+
+const FREQ3 = [['MONTHLY', 'Monthly'], ['QUARTERLY', 'Quarterly'], ['ANNUALLY', 'Yearly']];
+Object.assign(WSPEC, {
+  nps: { arr: 'npsAccounts', nameKey: 'name', noun: 'NPS account', fields: [
+      F.text('name', 'Name', { req: 1, ph: 'e.g. NPS Tier 1' }), F.text('pran', 'PRAN (optional)'), F.text('pfm', 'Pension fund manager (optional)'), F.chips('tier', 'Tier', [[1, 'Tier 1'], [2, 'Tier 2']]),
+      F.num('currentValue', 'Current value', { req: 1, rs: 1, zero: 1 }), F.num('monthlyContribution', 'Monthly contribution (optional)', { nullable: 1 }) ],
+    post: (rec, st, src) => { rec.lastUpdatedAt = Date.now(); },
+    make: () => ({ name: '', pran: '', pfm: '', tier: 1, currentValue: '', lastUpdatedAt: Date.now(), monthlyContribution: null, recurringDayOfMonth: null, lastContributionDate: null, isArchived: false }) },
+  apy: { arr: 'apyAccounts', nameKey: 'name', noun: 'APY account', fields: [
+      F.text('name', 'Name', { req: 1, ph: 'e.g. Atal Pension Yojana' }), F.text('pran', 'PRAN (optional)'), F.text('bankName', 'Bank (optional)'), F.text('accountNumber', 'Account no. (optional)'), F.text('ifsc', 'IFSC (optional)'),
+      F.num('monthlyContribution', 'Monthly contribution', { req: 1, min: 0.01, rs: 1 }), F.chips('pensionSlab', 'Pension per month', [1000, 2000, 3000, 4000, 5000].map(v => [v, '₹' + v])),
+      F.date('startDate', 'Started on', { req: 1 }), F.num('totalContributedSoFar', 'Total contributed so far', { req: 1, rs: 1, zero: 1 }) ],
+    make: () => ({ name: '', pran: '', bankName: '', accountNumber: '', ifsc: '', monthlyContribution: '', pensionSlab: 1000, startDate: Date.now(), totalContributedSoFar: '', lastContributionDate: null, recurringDayOfMonth: null, isArchived: false }) },
+  mf: { arr: 'mutualFunds', nameKey: 'schemeName', noun: 'mutual fund', fields: [
+      F.text('schemeName', 'Fund name', { req: 1, ph: 'e.g. Parag Parikh Flexi Cap' }), F.text('fundHouse', 'Fund house (optional)'), F.text('platformName', 'Platform (optional)', { ph: 'e.g. Groww, Zerodha' }), F.text('folioNumber', 'Folio no. (optional)'), F.text('schemeCode', 'AMFI scheme code (optional)'),
+      F.num('lastFetchedNav', 'Latest NAV (update it now and then)', { nullable: 1 }) ],
+    entries: { key: 'entries', label: 'Purchases', inputs: [{ k: 'invested', label: 'Amount invested' }, { k: 'nav', label: 'NAV on that day' }], addLabel: 'Add purchase', typeKey: 'isSip', boolType: 1, types: [['false', 'One-time'], ['true', 'SIP']],
+      build: ne => { const inv = +ne.vals.invested, nav = +ne.vals.nav; if (!(inv > 0) || !(nav > 0)) return 'Enter the amount invested and the NAV (both above zero).';
+        return { investedAmount: Math.round(inv * 100) / 100, navAtPurchase: nav, unitsAllotted: Math.round(inv / nav * 1000) / 1000, purchaseDate: tsOf(ne.date), isSip: ne.type === 'true' }; },
+      dateKey: 'purchaseDate', line: e => `${money(e.investedAmount)} · ${e.unitsAllotted} units @ ${e.navAtPurchase}`, sipKey: 'isSip' },
+    post: (rec, st, src) => { const old = src ? src.lastFetchedNav : null; if (rec.lastFetchedNav != null && rec.lastFetchedNav !== old) rec.lastFetchedAt = Date.now(); if (rec.lastFetchedNav == null) rec.lastFetchedAt = null; },
+    make: () => ({ schemeCode: '', schemeName: '', folioNumber: '', fundHouse: '', platformName: '', lastFetchedNav: null, lastFetchedAt: null, entries: [], sip: null, isArchived: false }) },
+  demat: { arr: 'dematHoldings', nameKey: 'stockSymbol', noun: 'share holding', fields: [
+      F.text('stockSymbol', 'Share / stock symbol', { req: 1, ph: 'e.g. TCS' }), F.chips('exchangeCode', 'Exchange', [['NSE', 'NSE'], ['BSE', 'BSE']]), F.text('accountName', 'Demat account (optional)', { ph: 'e.g. Zerodha' }),
+      F.num('unitsHeld', 'Number of shares', { req: 1, min: 0.0001 }), F.num('avgBuyPrice', 'Average buy price', { req: 1, min: 0.01, rs: 1 }), F.num('lastFetchedPrice', 'Latest price (update it now and then)', { nullable: 1, rs: 1 }) ],
+    post: (rec, st, src) => { const old = src ? src.lastFetchedPrice : null; if (rec.lastFetchedPrice != null && rec.lastFetchedPrice !== old) rec.lastFetchedAt = Date.now(); if (rec.lastFetchedPrice == null) rec.lastFetchedAt = null; },
+    make: () => ({ accountName: '', stockSymbol: '', exchangeCode: 'NSE', unitsHeld: '', avgBuyPrice: '', lastFetchedPrice: null, lastFetchedAt: null, isArchived: false }) },
+  insurance: { arr: 'insurancePolicies', nameKey: 'policyName', noun: 'insurance policy', fields: [
+      F.text('policyName', 'Policy name', { req: 1, ph: 'e.g. HDFC Term Plan' }), F.text('insurerName', 'Insurer', { req: 1 }), F.text('policyNumber', 'Policy no. (optional)'),
+      F.chips('policyType', 'Type', [['TERM', 'Term'], ['HEALTH', 'Health'], ['ENDOWMENT', 'Endowment'], ['MONEY_BACK', 'Money back'], ['ULIP', 'ULIP']]),
+      F.num('sumAssured', 'Sum assured', { req: 1, rs: 1, zero: 1 }), F.num('premiumAmount', 'Premium', { req: 1, rs: 1, zero: 1 }), F.chips('premiumFrequency', 'Paid', FREQ3),
+      F.date('startDate', 'Start date (optional)', { opt: 1 }), F.date('nextDueDate', 'Next premium due (optional)', { opt: 1 }), F.date('maturityDate', 'Maturity date (optional)', { opt: 1 }),
+      F.chips('hasCashValue', 'Has a cash / surrender value?', [['true', 'Yes'], ['false', 'No']]), F.num('currentSurrenderValue', 'Surrender value now', { rs: 1, zero: 1, show: s => s.hasCashValue === 'true' }) ],
+    pre: st => { st.hasCashValue = String(!!st.hasCashValue); },
+    post: (rec) => { rec.hasCashValue = rec.hasCashValue === 'true'; if (!rec.hasCashValue) rec.currentSurrenderValue = 0; },
+    make: () => ({ policyName: '', policyNumber: '', insurerName: '', policyType: 'TERM', startDate: null, maturityDate: null, sumAssured: '', premiumAmount: '', premiumFrequency: 'ANNUALLY', premiumPaymentTermYears: null, nextDueDate: null, hasCashValue: false, currentSurrenderValue: 0, isArchived: false }) },
+  metal: { arr: 'metalHoldings', idOf: x => metalLabel(x), noun: 'gold / silver', fields: [
+      F.chips('metalType', 'Metal', [['GOLD', 'Gold'], ['SILVER', 'Silver']]), F.chips('caratType', 'Purity', st => st.metalType === 'SILVER' ? ['999', '925'].map(v => [v, v]) : ['24K', '22K', '18K', '14K'].map(v => [v, v])),
+      F.chips('form', 'Form', [['PHYSICAL', 'Physical'], ['DIGITAL', 'Digital']]), F.num('quantityGrams', 'Quantity (grams)', { req: 1, min: 0.001 }), F.num('currentPricePerGram', 'Price per gram now', { nullable: 1, rs: 1 }) ],
+    fix: st => { const ok = st.metalType === 'SILVER' ? ['999', '925'] : ['24K', '22K', '18K', '14K']; if (!ok.includes(st.caratType)) st.caratType = ok[st.metalType === 'SILVER' ? 0 : 1]; },
+    post: rec => { rec.lastUpdatedAt = Date.now(); },
+    make: () => ({ metalType: 'GOLD', caratType: '22K', form: 'PHYSICAL', quantityGrams: '', currentPricePerGram: null, lastUpdatedAt: null, isArchived: false }) },
+});
 const wealthByName = (d, name) => activeBooks(d).find(b => b.name === name && b.bookType === 'WEALTH');
 const mutateWealth = fn => { const name = currentBook().name; return mutate(d => { const b = wealthByName(d, name); if (!b) throw new Error('This book was not found any more.'); fn(b); }); };
 const tsOf = v => { const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d, 12).getTime(); };
 
+function toggleRow(label, get, set) {
+  const sw = h('button', { type: 'button', class: 'switch', role: 'switch' }, h('span', { class: 'knob' }));
+  const paint = () => { sw.setAttribute('aria-checked', String(!!get())); sw.className = 'switch' + (get() ? ' on' : ''); };
+  sw.onclick = () => { set(!get()); paint(); }; paint();
+  return h('div', { class: 'switchrow' }, h('span', null, label), sw);
+}
 function openWealth(key, it) {
   const spec = WSPEC[key], book = currentBook(), isEdit = !!it, src = isEdit ? it.src : null;
-  const arr0 = book[spec.arr] || [], idx0 = isEdit ? arr0.indexOf(src) : -1, origName = isEdit ? src[spec.nameKey] : null;
+  const idOf = spec.idOf || (x => x[spec.nameKey]);
+  const arr0 = book[spec.arr] || [], idx0 = isEdit ? arr0.indexOf(src) : -1, origName = isEdit ? idOf(src) : null;
   const st = JSON.parse(JSON.stringify(isEdit ? src : spec.make()));
-  const ds = {}; spec.fields.forEach(f => { if (f.t === 'date') ds[f.k] = dstr(st[f.k]); if (f.t === 'num' && st[f.k] != null) st[f.k] = String(st[f.k]); });
+  if (spec.pre) spec.pre(st);
+  const ds = {}; spec.fields.forEach(f => { if (f.t === 'date') ds[f.k] = st[f.k] ? dstr(st[f.k]) : ''; if (f.t === 'num' && st[f.k] != null) st[f.k] = String(st[f.k]); if (f.t === 'chips' && st[f.k] != null && typeof f.opts !== 'function' && f.opts.some(o => typeof o[0] === 'string') && typeof st[f.k] !== 'string') st[f.k] = String(st[f.k]); });
   const ent = spec.entries, ents = ent ? (st[ent.key] || []) : null; if (ent) st[ent.key] = ents;
-  const ne = { date: dstr(Date.now()), amt: '', type: ent && ent.types ? ent.types[0][0] : null };
+  const inputs = ent ? (ent.inputs || [{ k: 'amt', label: ent.amtLabel || 'Amount' }]) : [];
+  const ne = { date: dstr(Date.now()), vals: {}, type: ent && ent.types ? ent.types[0][0] : null };
   sheetForm((isEdit ? 'Edit ' : 'Add ') + spec.noun, api => {
     const fieldsBox = h('div', null), entBox = h('div', null);
     const paint = () => {
+      if (spec.fix) spec.fix(st);
       fieldsBox.replaceChildren(...spec.fields.filter(f => !f.show || f.show(st)).map(f => {
         let ctl;
-        if (f.t === 'chips') ctl = chipRow(f.opts, () => st[f.k], v => { st[f.k] = v; paint(); });
+        if (f.t === 'chips') { const o = typeof f.opts === 'function' ? f.opts(st) : f.opts; ctl = chipRow(o, () => st[f.k], v => { st[f.k] = v; paint(); }); }
         else if (f.t === 'date') ctl = h('input', { type: 'date', value: ds[f.k], 'aria-label': f.label, oninput: e => { ds[f.k] = e.target.value; } });
         else ctl = h('input', { type: 'text', value: st[f.k] == null ? '' : String(st[f.k]), inputmode: f.t === 'num' ? 'decimal' : null, placeholder: f.ph || '', 'aria-label': f.label, autocomplete: 'off', oninput: e => { st[f.k] = e.target.value; } });
         return h('div', null, h('div', { class: 'flbl' }, f.label), ctl);
@@ -737,40 +790,44 @@ function openWealth(key, it) {
       if (ent) {
         const sorted = ents.map((e, i) => ({ e, i })).sort((a, b) => b.e[ent.dateKey] - a.e[ent.dateKey]);
         const dIn = h('input', { type: 'date', value: ne.date, 'aria-label': 'Date', oninput: e => { ne.date = e.target.value; } });
-        const aIn = h('input', { type: 'text', inputmode: 'decimal', placeholder: 'Amount', value: ne.amt, 'aria-label': ent.amtLabel, autocomplete: 'off', oninput: e => { ne.amt = e.target.value; } });
+        const ins = inputs.map(inp => h('input', { type: 'text', inputmode: 'decimal', placeholder: inp.label, value: ne.vals[inp.k] || '', 'aria-label': inp.label, autocomplete: 'off', oninput: e => { ne.vals[inp.k] = e.target.value.replace(/,/g, ''); } }));
         const add = h('button', { type: 'button', class: 'btn', onclick: () => {
-          const v = Math.round(parseFloat(String(ne.amt).replace(/,/g, '')) * 100) / 100; if (!(v > 0) || !ne.date) return api.fail('Enter a date and an amount above zero for the entry.');
-          const row = { amount: v, [ent.dateKey]: tsOf(ne.date), ...(ent.typeKey ? { [ent.typeKey]: ne.type } : {}), ...(ent.extra || {}), ...(key === 'ppf' ? { note: '' } : {}) };
-          ents.push(row); ne.amt = ''; api.fail(''); paint(); } }, '+ ' + ent.addLabel);
+          if (!ne.date) return api.fail('Choose the date of the entry.');
+          let row;
+          if (ent.build) { row = ent.build(ne); if (typeof row === 'string') return api.fail(row); }
+          else { const v = Math.round(parseFloat(ne.vals.amt) * 100) / 100; if (!(v > 0)) return api.fail('Enter a date and an amount above zero for the entry.');
+            row = { amount: v, [ent.dateKey]: tsOf(ne.date), ...(ent.typeKey ? { [ent.typeKey]: ne.type } : {}), ...(ent.extra || {}), ...(key === 'ppf' ? { note: '' } : {}) }; }
+          ents.push(row); ne.vals = {}; api.fail(''); paint(); } }, '+ ' + ent.addLabel);
+        const show = e => ent.line ? ent.line(e) : money(e.amount);
+        const tname = e => ent.types ? ((ent.types.find(t => t[0] === String(e[ent.typeKey])) || [0, ''])[1]) : '';
         entBox.replaceChildren(h('div', { class: 'flbl' }, ent.label + ' (' + ents.length + ')'),
           ent.types ? chipRow(ent.types, () => ne.type, v => { ne.type = v; }) : null,
-          h('div', { class: 'two' }, dIn, aIn), h('div', { class: 'actions' }, add),
-          h('div', { class: 'erows' }, sorted.map(({ e, i }) => h('div', { class: 'erow' }, h('span', null, fmtDate(e[ent.dateKey]), ent.types ? ' · ' + ((ent.types.find(t => t[0] === e[ent.typeKey]) || [0, ''])[1]) : ''), h('b', null, money(e.amount)),
+          h('div', { class: 'two' }, h('div', null, dIn), h('div', { class: 'stack' }, ins)), h('div', { class: 'actions' }, add),
+          h('div', { class: 'erows' }, sorted.map(({ e, i }) => h('div', { class: 'erow' }, h('span', null, fmtDate(e[ent.dateKey]), tname(e) ? ' · ' + tname(e) : ''), h('b', null, show(e)),
             h('button', { class: 'x', type: 'button', 'aria-label': 'Remove entry', onclick: () => { ents.splice(i, 1); paint(); } }, '×')))));
       }
     };
     paint();
-    const excl = h('button', { type: 'button', class: 'chip2' }, ''); const pe = () => { excl.className = 'chip2' + (st.excludeFromNetWorth ? ' on' : ''); excl.textContent = st.excludeFromNetWorth ? '✓ Not counted in Net Worth' : 'Count in Net Worth'; };
-    excl.onclick = () => { st.excludeFromNetWorth = !st.excludeFromNetWorth; pe(); }; pe();
     const save = h('button', { type: 'button', class: 'btn primary big' }, isEdit ? 'Save changes' : 'Add');
     save.onclick = () => {
       const rec = {};
       for (const f of spec.fields.filter(f => !f.show || f.show(st))) {
         if (f.t === 'chips') { rec[f.k] = st[f.k]; continue; }
-        if (f.t === 'date') { if (!ds[f.k]) return api.fail('Choose “' + f.label + '”.'); rec[f.k] = tsOf(ds[f.k]); continue; }
+        if (f.t === 'date') { if (!ds[f.k]) { if (f.opt) { rec[f.k] = null; continue; } return api.fail('Choose “' + f.label + '”.'); } rec[f.k] = tsOf(ds[f.k]); continue; }
         const raw = String(st[f.k] == null ? '' : st[f.k]).trim().replace(/,/g, '');
         if (f.t === 'text') { if (f.req && !raw) return api.fail('Enter ' + f.label.toLowerCase() + '.'); rec[f.k] = raw; continue; }
-        if (!raw) { if (f.req) return api.fail('Enter ' + f.label.toLowerCase() + '.'); rec[f.k] = f.def != null ? f.def : 0; continue; }
+        if (!raw) { if (f.req) return api.fail('Enter ' + f.label.toLowerCase() + '.'); rec[f.k] = f.nullable ? null : (f.def != null ? f.def : 0); continue; }
         const v = parseFloat(raw); if (!isFinite(v)) return api.fail('“' + f.label + '” must be a number.');
         if (f.min != null && v < f.min) return api.fail('“' + f.label + '” must be at least ' + f.min + '.'); if (!f.zero && !f.min && v < 0) return api.fail('“' + f.label + '” cannot be negative.');
-        rec[f.k] = f.int ? Math.round(v) : Math.round(v * 100) / 100;
+        rec[f.k] = f.int ? Math.round(v) : Math.round(v * 10000) / 10000;
       }
       if (rec.interestRate != null && rec.interestRate > 100) return api.fail('The interest rate looks too high.');
       if (ent) rec[ent.key] = ents;
       rec.excludeFromNetWorth = !!st.excludeFromNetWorth;
+      if (spec.post) spec.post(rec, st, src);
       api.run(save, 'Saving…', () => mutateWealth(b => {
         b[spec.arr] = b[spec.arr] || []; let tgt;
-        if (isEdit) { tgt = b[spec.arr][idx0]; if (!tgt || tgt[spec.nameKey] !== origName) tgt = b[spec.arr].find(x => x[spec.nameKey] === origName); if (!tgt) throw new Error('This item was changed or removed on another device.'); }
+        if (isEdit) { tgt = b[spec.arr][idx0]; if (!tgt || idOf(tgt) !== origName) tgt = b[spec.arr].find(x => idOf(x) === origName); if (!tgt) throw new Error('This item was changed or removed on another device.'); }
         else { tgt = spec.make(); b[spec.arr].push(tgt); }
         Object.assign(tgt, rec);
       })).then(ok => ok && toast(isEdit ? 'Saved ✓' : 'Added ✓'));
@@ -778,19 +835,18 @@ function openWealth(key, it) {
     const extra = [];
     if (isEdit) { const del = h('button', { type: 'button', class: 'btn danger' }, 'Delete');
       del.onclick = () => { if (!confirm('Delete “' + origName + '”? This removes it and its history from your Net Worth.')) return;
-        api.run(del, 'Deleting…', () => mutateWealth(b => { const a = b[spec.arr] || []; let i = a[idx0] && a[idx0][spec.nameKey] === origName ? idx0 : a.findIndex(x => x[spec.nameKey] === origName); if (i < 0) throw new Error('This item was already removed.'); a.splice(i, 1); })).then(ok => ok && toast('Deleted')); }; extra.push(del); }
-    return h('div', null, fieldsBox, entBox, h('div', { class: 'flbl' }, 'Net Worth'), h('div', { class: 'chips' }, excl), h('div', { class: 'actions' }, save, extra));
+        api.run(del, 'Deleting…', () => mutateWealth(b => { const a = b[spec.arr] || []; let i = a[idx0] && idOf(a[idx0]) === origName ? idx0 : a.findIndex(x => idOf(x) === origName); if (i < 0) throw new Error('This item was already removed.'); a.splice(i, 1); })).then(ok => ok && toast('Deleted')); }; extra.push(del); }
+    return h('div', null, fieldsBox, entBox, toggleRow('Count in Net Worth', () => !st.excludeFromNetWorth, v => { st.excludeFromNetWorth = !v; }), h('div', { class: 'actions' }, save, extra));
   });
 }
 function openCash() {
   const book = currentBook(), st = { amt: String(book.cashInHand || 0), ex: !!book.cashExcludedFromNetWorth };
   sheetForm('Cash in hand', api => {
     const amt = h('input', { type: 'text', inputmode: 'decimal', class: 'amt', value: st.amt, 'aria-label': 'Cash in hand', autocomplete: 'off', oninput: e => { st.amt = e.target.value; } });
-    const ex = h('button', { type: 'button', class: 'chip2' }, ''); const pe = () => { ex.className = 'chip2' + (st.ex ? ' on' : ''); ex.textContent = st.ex ? '✓ Not counted in Net Worth' : 'Count in Net Worth'; }; ex.onclick = () => { st.ex = !st.ex; pe(); }; pe();
     const save = h('button', { type: 'button', class: 'btn primary big' }, 'Save');
     save.onclick = () => { const v = parseFloat(String(st.amt).replace(/,/g, '')); if (!isFinite(v) || v < 0) return api.fail('Enter the cash you have as a number (0 or more).');
       api.run(save, 'Saving…', () => mutateWealth(b => { b.cashInHand = Math.round(v * 100) / 100; if (st.ex) b.cashExcludedFromNetWorth = true; else delete b.cashExcludedFromNetWorth; })).then(ok => ok && toast('Cash updated ✓')); };
-    return h('div', null, h('div', { class: 'flbl' }, 'Amount of cash you have'), amt, h('div', { class: 'flbl' }, 'Net Worth'), h('div', { class: 'chips' }, ex), h('div', { class: 'actions' }, save));
+    return h('div', null, h('div', { class: 'flbl' }, 'Amount of cash you have'), amt, toggleRow('Count in Net Worth', () => !st.ex, v => { st.ex = !v; }), h('div', { class: 'actions' }, save));
   });
 }
 function pageExpenseDashboard() {

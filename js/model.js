@@ -78,10 +78,10 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
       lines: [`Employee + employer ${money(eeP)} · Pension ${money(pension)}`, `Interest not yet credited (not counted): ${money(Math.max(0, liveV - eeP))}`], excluded: x.excludeFromNetWorth });
   });
 
-  live(book.npsAccounts).forEach(x => add('nps', { name: x.name, sub: [`Tier ${x.tier}`, x.pfm].filter(Boolean).join(' · '), value: x.currentValue,
+  live(book.npsAccounts).forEach(x => add('nps', { src: x, name: x.name, sub: [`Tier ${x.tier}`, x.pfm].filter(Boolean).join(' · '), value: x.currentValue,
     lines: [`Value updated ${fmtDate(x.lastUpdatedAt)}`, ...(x.monthlyContribution ? [`Monthly ${money(x.monthlyContribution)}`] : [])], excluded: x.excludeFromNetWorth }));
 
-  live(book.apyAccounts).forEach(x => add('apy', { name: x.name, sub: [x.bankName, `Pension slab ${money(x.pensionSlab)}`].filter(Boolean).join(' · '), value: x.totalContributedSoFar,
+  live(book.apyAccounts).forEach(x => add('apy', { src: x, name: x.name, sub: [x.bankName, `Pension slab ${money(x.pensionSlab)}`].filter(Boolean).join(' · '), value: x.totalContributedSoFar,
     lines: [`Monthly ${money(x.monthlyContribution)} · started ${fmtDate(x.startDate)}`], excluded: x.excludeFromNetWorth }));
 
   live(book.mutualFunds).forEach(x => {
@@ -91,7 +91,7 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
     const nav = x.lastFetchedNav ?? avgNav;
     const value = units * nav;
     const gain = invested > 0 ? (value - invested) / invested * 100 : null;
-    add('mf', { name: x.schemeName, sub: [x.fundHouse, x.platformName].filter(Boolean).join(' · '), value, cost: invested,
+    add('mf', { src: x, name: x.schemeName, sub: [x.fundHouse, x.platformName].filter(Boolean).join(' · '), value, cost: invested,
       lines: [`${units.toFixed(3)} units · invested ${money(invested)}${gain === null ? '' : ' · ' + pct(gain)}`,
               x.lastFetchedNav == null ? 'No saved NAV yet — valued at your average cost' : `NAV ${nav.toFixed(4)} as of ${fmtDate(x.lastFetchedAt)}`,
               ...(x.sip && !x.sip.isHeld ? [`SIP ${money(x.sip.sipAmount)}/month`] : [])], excluded: x.excludeFromNetWorth });
@@ -102,16 +102,16 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
     const price = x.lastFetchedPrice ?? (x.avgBuyPrice > 0 ? x.avgBuyPrice : 0);
     const value = x.unitsHeld * price;
     const cost = x.avgBuyPrice > 0 ? x.unitsHeld * x.avgBuyPrice : 0;
-    add('demat', { name: x.stockSymbol, sub: [x.exchangeCode, x.accountName].filter(Boolean).join(' · '), value, cost,
+    add('demat', { src: x, name: x.stockSymbol, sub: [x.exchangeCode, x.accountName].filter(Boolean).join(' · '), value, cost,
       lines: [`${x.unitsHeld} units · avg ${money(x.avgBuyPrice)}`, x.lastFetchedPrice == null ? 'No saved price — valued at your average cost' : `Price ${money(price)} as of ${fmtDate(x.lastFetchedAt)}`], excluded: x.excludeFromNetWorth });
   });
 
-  live(book.insurancePolicies).forEach(x => add('insurance', { name: x.policyName, sub: [x.insurerName, x.policyType].filter(Boolean).join(' · '),
+  live(book.insurancePolicies).forEach(x => add('insurance', { src: x, name: x.policyName, sub: [x.insurerName, x.policyType].filter(Boolean).join(' · '),
     value: x.hasCashValue ? x.currentSurrenderValue : 0,
     lines: [`Sum assured: ${money(x.sumAssured)}`, x.hasCashValue ? `Surrender value: ${money(x.currentSurrenderValue)}` : 'No cash value',
             ...(x.nextDueDate ? [`Next premium ${money(x.premiumAmount)} on ${fmtDate(x.nextDueDate)}`] : [])], excluded: x.excludeFromNetWorth }));
 
-  live(book.metalHoldings).forEach(x => add('metal', { name: metalLabel(x), sub: `${x.quantityGrams} g`, value: x.quantityGrams * (x.currentPricePerGram ?? 0),
+  live(book.metalHoldings).forEach(x => add('metal', { src: x, name: metalLabel(x), sub: `${x.quantityGrams} g`, value: x.quantityGrams * (x.currentPricePerGram ?? 0),
     lines: [x.currentPricePerGram == null ? 'No price saved' : `${money(x.currentPricePerGram)} per gram`], excluded: x.excludeFromNetWorth }));
 
   live(book.manualAssets).forEach(x => add('asset', { name: x.name, sub: x.assetType, value: x.currentValue, lines: [`Updated ${fmtDate(x.lastUpdatedByUserAt)}`], excluded: x.excludeFromNetWorth }));
