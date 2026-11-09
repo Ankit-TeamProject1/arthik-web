@@ -1,7 +1,7 @@
 import { APP_VERSION, AUTO_LOCK_MS } from './config.js';
 import * as dbx from './dropbox.js';
 import { encrypt, decrypt, isEncrypted } from './crypto.js';
-import { CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, money, pct, fmtDate } from './model.js';
+import { CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, setMask, money, pct, fmtDate } from './model.js';
 
 const root = document.getElementById('app');
 const S = { enc: null, rev: null, modified: null, data: null, bookIdx: 0, offline: false, error: '', busy: false };
@@ -169,10 +169,13 @@ const NAV_E = [
   { id: 'dashboard', label: 'Home' }, { id: 'transactions', label: 'Entries' }, { id: 'budgets', label: 'Budgets' }, { id: 'settings', label: 'Settings' },
 ];
 const view = { cache: null };
+let em = 0; // Expense dashboard month offset (0 = this month, -1 = last month...)
+const monthNow = () => { if (!em) return Date.now(); const d = new Date(); return new Date(d.getFullYear(), d.getMonth() + em, 15, 12).getTime(); };
 function currentBook() { const w = activeBooks(S.data); return w[Math.min(S.bookIdx, w.length - 1)] || null; }
 function computed() {
   const b = currentBook(); if (!b) return null;
-  if (!view.cache || view.cache.book !== b) view.cache = { book: b, c: b.bookType === 'EXPENSE' ? computeExpense(b) : computeBook(b, S.data.rateHistory || []) };
+  const mk = hidden() && b.bookType === 'WEALTH';
+  if (!view.cache || view.cache.book !== b || view.cache.mk !== mk || view.cache.em !== em) view.cache = { book: b, mk, em, c: b.bookType === 'EXPENSE' ? computeExpense(b, monthNow()) : computeBook(b, S.data.rateHistory || []) };
   return view.cache.c;
 }
 
@@ -183,6 +186,8 @@ function route() {
   const book = currentBook();
   let body;
   if (book) setCurrency(book.currencyCode);
+  const masked = !!book && book.bookType === 'WEALTH' && hidden();
+  setMask(masked);
   const isExp = !!book && book.bookType === 'EXPENSE';
   const NAV = isExp ? NAV_E : NAV_W;
   if (!book) body = emptyState();
@@ -199,10 +204,18 @@ function route() {
   const nav = h('nav', { class: 'nav', 'aria-label': 'Main' }, NAV.map(n => h('a', { href: '#/' + n.id, class: n.id === active ? 'on' : '', 'aria-current': n.id === active ? 'page' : null }, h('span', { class: 'dot' }), n.label)));
   const brandRow = () => h('div', { class: 'brand sm' }, h('img', { class: 'logo', src: 'icons/logo.png', alt: '', width: 40, height: 40 }), h('div', { class: 'brandname' }, 'Arthik'));
   const side = h('aside', { class: 'side' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker()), nav.cloneNode(true));
-  mount(h('div', { class: 'layout' }, side, h('main', { class: 'main' }, h('div', { class: 'mbar' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker())), body, h('div', { class: 'foot' }, 'Arthik web ' + APP_VERSION + ' · view only')), nav));
+  mount(h('div', { class: 'layout' }, side, h('main', { class: 'main' }, h('div', { class: 'mbar' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker())), body, h('div', { class: 'foot' }, 'Arthik web ' + APP_VERSION + ' · view only' + (matchMedia('(hover:hover)').matches ? ' · shortcuts: / search, H hide values' : ''))), nav));
   window.scrollTo(0, 0);
 }
 addEventListener('hashchange', () => { if (S.data) route(); });
+// Laptop shortcuts: "/" search entries, "h" hide or show values, "g" then nothing else is needed.
+addEventListener('keydown', e => {
+  if (!S.data || e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = (e.target && e.target.tagName || '').toLowerCase(); if (['input', 'select', 'textarea'].includes(tag)) return;
+  const b = currentBook(); if (!b) return;
+  if (e.key === '/' && b.bookType === 'EXPENSE') { e.preventDefault(); if (!location.hash.includes('transactions')) location.hash = '#/transactions'; setTimeout(() => { const i = document.querySelector('input[type=search]'); if (i) i.focus(); }, 50); }
+  else if ((e.key === 'h' || e.key === 'H') && b.bookType === 'WEALTH') { setHidden(!hidden()); view.cache = null; route(); }
+});
 
 function emptyState() {
   return h('div', null, h('h1', null, 'No books found'), h('p', null, 'Your backup has no active books.'));
@@ -214,7 +227,7 @@ function bookPicker() {
   const cur = currentBook();
   const kind = h('div', { class: 'bookkind' }, cur.bookType === 'EXPENSE' ? 'Expense book' : 'Wealth book');
   if (books.length < 2) return h('div', null, h('div', { class: 'bookname' }, cur.name), kind);
-  return h('div', null, h('select', { class: 'bookpick', 'aria-label': 'Book', onchange: e => { S.bookIdx = +e.target.value; location.hash = '#/dashboard'; route(); } },
+  return h('div', null, h('select', { class: 'bookpick', 'aria-label': 'Book', onchange: e => { S.bookIdx = +e.target.value; em = 0; location.hash = '#/dashboard'; route(); } },
     books.map((b, i) => h('option', { value: i, selected: i === S.bookIdx }, b.name))), kind);
 }
 function bookHeader(title, sub) {
@@ -245,23 +258,24 @@ function trend(book, nw) {
 
 const hidden = () => { try { return localStorage.getItem('arthik.hide') === '1'; } catch { return false; } };
 const setHidden = (v) => { try { v ? localStorage.setItem('arthik.hide', '1') : localStorage.removeItem('arthik.hide'); } catch {} };
-const mask = (t) => hidden() ? t.replace(/[0-9,]+/, '••••••') : t;
+const mask = (t) => t;
 
 function pageDashboard() {
   const c = computed(), book = currentBook();
   const d = donut(c);
   const last = (book.netWorthSnapshots || []).filter(s => s.date < Date.now() - 25 * 86400000).sort((a, b) => b.date - a.date)[0];
   const change = last && last.value ? (c.netWorth - last.value) / Math.abs(last.value) * 100 : null;
+  const tile = (href, label, code, color, ill, value, share, gain, hasEx) => h('a', { class: 'tile3d', href, style: { '--acc': color } },
+    h('div', { class: 't3-top' }, h('span', { class: 'chip round', style: { background: color } }, code), h('img', { class: 't3-ill', src: 'icons/ill/' + ill + '.svg', alt: '', width: 56, height: 56 })),
+    h('div', { class: 'tname' }, label), h('div', { class: 'tval' }, value),
+    h('div', { class: 't3-bar' }, h('span', { style: { width: Math.min(100, Math.max(0, share)) + '%', background: color } })),
+    h('div', { class: 't3-foot' }, h('span', { class: 'tnote' }, share.toFixed(0) + '% of total'), gain !== null ? h('span', { class: 'badge ' + (gain >= 0 ? 'up' : 'down') }, pct(gain)) : (hasEx ? h('span', { class: 'excl' }, 'Some excluded') : null)));
   const tiles = c.cats.filter(x => x.items.length).map(x => {
-    const gain = x.cost > 0 ? (x.total - x.cost) / x.cost * 100 : null;
-    const hasEx = x.items.some(i => i.excluded);
-    return h('a', { class: 'tile', href: '#/cat/' + x.key }, h('div', { class: 'tile-top' }, h('span', { class: 'tname' }, x.label), h('span', { class: 'chip', style: { background: x.color } }, x.code)),
-      h('div', { class: 'tval' }, money(x.total)),
-      h('div', { class: 'tnote' + (gain !== null && ['demat', 'mf'].includes(x.key) ? (gain >= 0 ? ' up' : ' down') : '') }, gain !== null && ['demat', 'mf'].includes(x.key) ? pct(gain) : (c.assets > 0 ? (x.total / c.assets * 100).toFixed(1) + '% of assets' : '')),
-      hasEx ? h('div', { class: 'excl' }, 'Some not in Net Worth') : null);
+    const gain = x.cost > 0 && ['demat', 'mf'].includes(x.key) ? (x.total - x.cost) / x.cost * 100 : null;
+    return tile('#/cat/' + x.key, x.label, x.code, x.color, x.ill, money(x.total), c.assets > 0 ? x.total / c.assets * 100 : 0, gain, x.items.some(i => i.excluded));
   });
-  tiles.push(h('a', { class: 'tile', href: '#/liabilities' }, h('div', { class: 'tile-top' }, h('span', { class: 'tname' }, 'Liabilities'), h('span', { class: 'chip', style: { background: '#B5655B' } }, 'LI')), h('div', { class: 'tval' }, money(c.liabTotal)), h('div', { class: 'tnote' }, c.liabilities.length + ' entries')));
-  return h('div', null, bookHeader('Dashboard', book.name),
+  tiles.push(tile('#/liabilities', 'Liabilities', 'LI', '#EF4444', 'liab', money(c.liabTotal), c.liabTotal > 0 ? 100 : 0, null, false));
+  return h('div', null, bookHeader('Dashboard', book.name), backupBanner(), installHint(),
     h('section', { class: 'card hero' },
       h('div', { class: 'irow' }, h('div', { class: 'lbl' }, 'Net Worth'),
         h('button', { class: 'eye', 'aria-pressed': hidden(), 'aria-label': hidden() ? 'Show Net Worth' : 'Hide Net Worth', onclick: () => { setHidden(!hidden()); route(); } }, hidden() ? 'Show' : 'Hide')),
@@ -270,7 +284,7 @@ function pageDashboard() {
       change !== null && !hidden() ? h('div', { class: 'tnote ' + (change >= 0 ? 'up' : 'down') }, pct(change) + ' vs about a month ago') : null,
       hidden() ? null : trend(book, c.netWorth)),
     h('section', { class: 'card alloc' }, d.svg, h('ul', { class: 'legend' }, d.parts.sort((a, b) => b.total - a.total).map(p => h('li', null, h('span', { class: 'sw', style: { background: p.color } }), `${p.label} ${(p.total / d.tot * 100).toFixed(1)}%`)))),
-    h('h2', null, 'Categories'), h('div', { class: 'grid' }, tiles),
+    h('h2', null, 'Categories'), h('div', { class: 'grid g3d' }, tiles),
     h('div', { class: 'small' }, 'Prices and NAVs are the last ones saved by your phone. Live refresh arrives in a later phase.'));
 }
 
@@ -322,44 +336,97 @@ function pageRent() {
 
 // ---------- Expense book pages ----------
 const dayLabel = (ts) => new Date(ts).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+const PALETTE = ['#3B82F6', '#F59E0B', '#14B8A6', '#EC4899', '#8B5CF6', '#10B981', '#F97316', '#0EA5E9', '#EF4444', '#6366F1', '#EAB308', '#22C55E'];
+const TYPE = { INCOME: { label: 'Income', cls: 'up', sign: '+' }, EXPENSE: { label: 'Expense', cls: 'down', sign: '−' }, TRANSFER: { label: 'Transfer', cls: 'blue', sign: '' } };
+// Each category gets its own colour: the one saved in the app, unless several categories share the same one
+// (the default), in which case they are told apart with a palette.
+function catColors(c) {
+  if (c._cc) return c._cc;
+  const cats = Object.values(c.cat), parsed = {}, count = {};
+  cats.forEach(x => { const m = typeof x.colorHex === 'string' && x.colorHex.trim().match(/^#?([0-9a-f]{6}|[0-9a-f]{8})$/i);
+    const col = m ? '#' + (m[1].length === 8 ? m[1].slice(2) : m[1]).toUpperCase() : null; parsed[x.localId] = col; if (col) count[col] = (count[col] || 0) + 1; });
+  const out = {}; cats.forEach((x, i) => { const col = parsed[x.localId]; out[x.localId] = col && count[col] === 1 ? col : PALETTE[i % PALETTE.length]; });
+  return (c._cc = out);
+}
 function txRow(t, c) {
-  const a = c.acc[t.accountLocalId], to = c.acc[t.toAccountLocalId], cat = c.cat[t.categoryLocalId];
-  const sign = t.type === 'INCOME' ? '+' : t.type === 'EXPENSE' ? '−' : '';
-  const title = t.type === 'TRANSFER' ? `Transfer: ${a ? a.name : '?'} → ${to ? to.name : '?'}` : (cat ? cat.name : 'Uncategorised');
+  const a = c.acc[t.accountLocalId], to = c.acc[t.toAccountLocalId], cat = c.cat[t.categoryLocalId], ty = TYPE[t.type] || TYPE.EXPENSE;
+  const mode = t.type !== 'TRANSFER' && a ? ` (${a.name})` : '';
+  const title = t.type === 'TRANSFER' ? `${a ? a.name : '?'} → ${to ? to.name : '?'}${t.note ? ' · ' + t.note : ''}` : (cat ? cat.name : 'Uncategorised') + (t.note ? ' · ' + t.note : '') + mode;
+  const dot = t.type === 'TRANSFER' ? 'var(--pri)' : (cat ? catColors(c)[cat.localId] : 'var(--line2)');
   return h('div', { class: 'tx' },
-    h('span', { class: 'dotc', style: { background: cat && cat.colorHex ? (String(cat.colorHex).startsWith('#') ? cat.colorHex : '#' + String(cat.colorHex).replace(/^0x/i, '').slice(-6)) : 'var(--line)' } }),
-    h('div', { class: 'txm' }, h('div', { class: 'txt' }, title), h('div', { class: 'isub' }, [dayLabel(t.occurredAt), t.type !== 'TRANSFER' && a ? a.name : '', t.note].filter(Boolean).join(' · '))),
-    h('div', { class: 'txa ' + (t.type === 'INCOME' ? 'up' : '') }, sign + money(t.amount)));
+    h('span', { class: 'dotc', style: { background: dot } }),
+    h('div', { class: 'txm' }, h('div', { class: 'txt' }, title, h('span', { class: 'ttag ' + ty.cls }, ty.label)), h('div', { class: 'isub' }, dayLabel(t.occurredAt))),
+    h('div', { class: 'txa ' + ty.cls }, ty.sign + money(t.amount)));
 }
 
+const sentence = x => { const t = String(x || '').replace(/_/g, ' ').trim().toLowerCase(); return t.charAt(0).toUpperCase() + t.slice(1); };
+const niceName = x => { const t = String(x || '').trim(); return t && t === t.toLowerCase() ? t.charAt(0).toUpperCase() + t.slice(1) : t; };
+const accType = a => { const ty = sentence(a.type); return ty && ty.replace(/\s/g, '').toLowerCase() !== String(a.name || '').replace(/\s/g, '').toLowerCase() ? ty : ''; };
+
+// ---------- small helpers: backup age, install hint, due pills ----------
+function backupBanner() {
+  const t = S.data && S.data.exportedAt; if (!t) return null;
+  const days = Math.floor((Date.now() - t) / 86400000);
+  const old = days >= 14;
+  return h('div', { class: 'fresh' + (old ? ' old' : '') }, old ? '⚠ ' : '', `Data from your backup of ${fmtDate(t)}` + (days <= 0 ? ' (today)' : ` (${days} day${days === 1 ? '' : 's'} old)`) + (old ? '. Take a fresh backup on your Android phone and use Settings › Replace from a backup file.' : ''));
+}
+function installHint() {
+  try {
+    const ua = navigator.userAgent, ios = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const standalone = window.navigator.standalone || matchMedia('(display-mode: standalone)').matches;
+    if (!ios || standalone || localStorage.getItem('arthik.hint') === '1') return null;
+    return h('div', { class: 'note hint' }, h('b', null, 'Tip: '), 'tap the Share button in Safari, then “Add to Home Screen”. Arthik then opens like a normal app, without the browser bars. ',
+      h('button', { class: 'link', onclick: e => { try { localStorage.setItem('arthik.hint', '1'); } catch {} e.target.closest('.hint').remove(); } }, 'Got it'));
+  } catch { return null; }
+}
+function duePill(a, c) {
+  if (a.type !== 'CREDIT_CARD') return null;
+  const rules = (c.rulesAll || []).filter(r => !r.isPaused && (r.accountLocalId === a.localId || r.toAccountLocalId === a.localId)).sort((x, y) => x.nextRunAt - y.nextRunAt);
+  const r = rules[0]; if (!r) return null;
+  const sod = new Date(); sod.setHours(0, 0, 0, 0);
+  const days = Math.round((new Date(r.nextRunAt).setHours(0, 0, 0, 0) - sod.getTime()) / 86400000);
+  const txt = days < 0 ? `Overdue by ${-days} day${days === -1 ? '' : 's'}` : days === 0 ? 'Due today' : `Due in ${days} day${days === 1 ? '' : 's'}`;
+  return h('div', { class: 'pill ' + (days < 0 ? 'bad' : days <= 3 ? 'warn' : 'ok') }, txt, ' · ', money(r.amount));
+}
+const monthLabel = (off) => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth() + off, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }); };
 function pageExpenseDashboard() {
   const c = computed(), book = currentBook();
-  return h('div', null, bookHeader('Dashboard', book.name),
-    h('section', { class: 'card hero' }, h('div', { class: 'lbl' }, 'This month spent'), h('div', { class: 'big' }, money(c.month)),
-      h('div', { class: 'hsub' }, h('span', null, 'Today ', h('b', null, money(c.today))), h('span', null, 'Income this month ', h('b', null, money(c.monthIncome))))),
+  const oldest = c.txs.length ? c.txs[c.txs.length - 1].occurredAt : Date.now(), od = new Date(oldest), nd = new Date();
+  const minOff = (od.getFullYear() - nd.getFullYear()) * 12 + od.getMonth() - nd.getMonth();
+  const cur = em === 0, ml = monthLabel(em);
+  const go = d => h('button', { class: 'mnav', 'aria-label': d < 0 ? 'Previous month' : 'Next month', disabled: d < 0 ? em <= minOff : em >= 0, onclick: () => { em = Math.max(minOff, Math.min(0, em + d)); route(); } }, d < 0 ? '‹' : '›');
+  return h('div', null, bookHeader('Dashboard', book.name), backupBanner(), installHint(),
+    h('div', { class: 'monthbar' }, go(-1), h('div', { class: 'mlabel' }, ml, cur ? '' : h('button', { class: 'link', onclick: () => { em = 0; route(); } }, 'Back to this month')), go(1)),
+    h('section', { class: 'card hero' }, h('div', { class: 'lbl' }, cur ? 'This month spent' : ml + ' spent'), h('div', { class: 'big' }, money(c.month)),
+      h('div', { class: 'hsub' }, cur ? h('span', null, 'Today ', h('b', { class: 'down' }, money(c.today))) : null, h('span', null, (cur ? 'Income this month ' : 'Income '), h('b', { class: 'up' }, money(c.monthIncome))))),
     h('h2', null, 'Accounts'),
-    h('div', { class: 'grid' }, c.accounts.map(a => h('div', { class: 'tile' }, h('div', { class: 'tile-top' }, h('span', { class: 'tname' }, a.name), h('span', { class: 'tnote' }, a.type.replace('_', ' ').toLowerCase())),
-      h('div', { class: 'tval' + (a.balance < 0 ? ' down' : '') }, money(a.balance))))),
-    c.topCats.length ? h('div', null, h('h2', null, 'Spending by category (this month)'), h('section', { class: 'card' }, c.topCats.slice(0, 8).map(x => {
+    h('div', { class: 'grid' }, c.accounts.map(a => h('div', { class: 'tile' }, h('div', { class: 'tile-top' }, h('span', { class: 'tname' }, niceName(a.name)), accType(a) ? h('span', { class: 'tnote' }, accType(a)) : null),
+      h('div', { class: 'tval' + (a.balance < 0 ? ' down' : '') }, money(a.balance)), duePill(a, c)))),
+    h('h2', null, cur ? 'Spending by category (this month)' : 'Spending by category (' + ml + ')'),
+    !c.topCats.length ? h('section', { class: 'card empty' }, h('p', null, cur ? 'Nothing spent yet this month.' : 'No spending recorded in ' + ml + '.')) : null,
+    c.topCats.length ? h('div', null,  h('section', { class: 'card' }, c.topCats.slice(0, 8).map(x => {
       const pctw = c.month > 0 ? x.spent / c.month * 100 : 0;
-      return h('div', { class: 'catrow' }, h('div', { class: 'irow' }, h('span', null, x.cat ? x.cat.name : 'Uncategorised'), h('b', null, money(x.spent))), h('div', { class: 'bar' }, h('span', { style: { width: pctw + '%' } })));
+      const col = x.cat ? catColors(c)[x.cat.localId] : 'var(--mut)';
+      return h('div', { class: 'catrow' }, h('div', { class: 'irow' }, h('span', null, h('span', { class: 'sw', style: { background: col } }), x.cat ? x.cat.name : 'Uncategorised'), h('b', null, money(x.spent))), h('div', { class: 'bar' }, h('span', { style: { width: pctw + '%', background: col } })));
     }))) : null,
-    c.upcoming.length ? h('div', null, h('h2', null, 'Upcoming (next 7 days)'), h('div', { class: 'list' }, c.upcoming.map(r => h('div', { class: 'item' },
+    cur && c.upcoming.length ? h('div', null, h('h2', null, 'Upcoming (next 7 days)'), h('div', { class: 'list' }, c.upcoming.map(r => h('div', { class: 'item' },
       h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.name), h('div', { class: 'ival' }, money(r.amount))),
       h('div', { class: 'isub' }, `${r.type.toLowerCase()} · ${fmtDate(r.nextRunAt)}${r.nextRunAt < Date.now() ? ' · due' : ''}`))))) : null,
-    c.owed.length ? h('div', null, h('h2', null, 'Money owed to you'), h('div', { class: 'list' }, c.owed.map(r => h('div', { class: 'item' },
+    cur && c.owed.length ? h('div', null, h('h2', null, 'Money owed to you'), h('div', { class: 'list' }, c.owed.map(r => h('div', { class: 'item' },
       h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.personName), h('div', { class: 'ival' }, money(r.amount))), r.note ? h('div', { class: 'isub' }, r.note) : null)))) : null,
     h('h2', null, 'Recent entries'),
-    h('section', { class: 'card' }, c.txs.slice(0, 10).map(t => txRow(t, c)), c.txs.length ? h('a', { href: '#/transactions', class: 'btn ghost' }, 'See all entries') : h('p', null, 'No entries yet.')));
+    h('section', { class: 'card' }, c.txs.slice(0, 10).map(t => txRow(t, c)), c.txs.length ? h('a', { href: '#/transactions', class: 'btn ghost' }, 'See all entries') : h('p', null, 'No entries yet. Entries you add in the Android app appear here after you take a new backup.')));
 }
 
-const ef = { q: '', type: 'ALL', month: 'ALL', limit: 100 };
+const ef = { q: '', type: 'ALL', month: 'ALL', cat: 'ALL', acc: 'ALL', limit: 100 };
 function pageEntries() {
   const c = computed();
   const months = [...new Set(c.txs.map(t => { const d = new Date(t.occurredAt); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); }))];
   const q = ef.q.trim().toLowerCase();
   const rows = c.txs.filter(t => {
     if (ef.type !== 'ALL' && t.type !== ef.type) return false;
+    if (ef.cat !== 'ALL' && String(t.categoryLocalId) !== ef.cat) return false;
+    if (ef.acc !== 'ALL' && String(t.accountLocalId) !== ef.acc && String(t.toAccountLocalId) !== ef.acc) return false;
     const d = new Date(t.occurredAt), mk = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
     if (ef.month !== 'ALL' && mk !== ef.month) return false;
     if (!q) return true;
@@ -375,9 +442,11 @@ function pageEntries() {
   return h('div', null, bookHeader('Entries', currentBook().name),
     h('div', { class: 'filters' }, search,
       sel([['ALL', 'All types'], ['EXPENSE', 'Expenses'], ['INCOME', 'Income'], ['TRANSFER', 'Transfers']], ef.type, v => ef.type = v, 'Type'),
+      sel([['ALL', 'All categories'], ...(c.catList || Object.values(c.cat)).map(x => [String(x.localId), x.name])], ef.cat, v => ef.cat = v, 'Category'),
+      sel([['ALL', 'All accounts'], ...Object.values(c.acc).map(a => [String(a.localId), niceName(a.name) + (accType(a) ? ' (' + accType(a) + ')' : '')])], ef.acc, v => ef.acc = v, 'Account'),
       sel([['ALL', 'All months'], ...months.map(m => [m, new Date(m + '-15').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })])], ef.month, v => ef.month = v, 'Month')),
-    h('div', { class: 'hsub', style: { margin: '10px 0' } }, h('span', null, rows.length + ' entries'), h('span', null, 'Spent ', h('b', null, money(spent))), h('span', null, 'Income ', h('b', null, money(got)))),
-    h('section', { class: 'card' }, groups.map(g => h('div', null, h('div', { class: 'dayh' }, g.k), g.rows.map(t => txRow(t, c)))), rows.length ? null : h('p', null, 'Nothing matches.')),
+    h('div', { class: 'hsub', style: { margin: '10px 0' } }, h('span', null, rows.length + ' entries'), h('span', null, 'Spent ', h('b', { class: 'down' }, money(spent))), h('span', null, 'Income ', h('b', { class: 'up' }, money(got)))),
+    h('section', { class: 'card' }, groups.map(g => h('div', null, h('div', { class: 'dayh' }, g.k), g.rows.map(t => txRow(t, c)))), rows.length ? null : h('p', { class: 'empty' }, c.txs.length ? 'No entries match these filters. Try clearing the search or choosing “All”.' : 'No entries yet.')),
     rows.length > shown.length ? h('button', { class: 'btn', onclick: () => { ef.limit += 200; route(); } }, `Show more (${rows.length - shown.length} left)`) : null);
 }
 
@@ -387,8 +456,8 @@ function pageBudgets() {
   return h('div', null, bookHeader('Budgets', mname),
     c.budgets.length ? h('div', { class: 'list' }, c.budgets.map(b => { const p = b.cap > 0 ? b.spent / b.cap * 100 : 0;
       return h('div', { class: 'item' }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, b.cat ? b.cat.name : 'Category'), h('div', { class: 'ival ' + (p > 100 ? 'down' : '') }, Math.round(p) + '%')),
-        h('div', { class: 'bar' + (p > 100 ? ' over' : ''), role: 'progressbar', 'aria-valuenow': Math.round(p), 'aria-valuemin': 0, 'aria-valuemax': 100 }, h('span', { style: { width: Math.min(100, p) + '%' } })),
-        h('div', { class: 'iline' }, `${money(b.spent)} of ${money(b.cap)}` + (b.spent > b.cap ? ` · over by ${money(b.spent - b.cap)}` : ` · ${money(b.cap - b.spent)} left`))); })) : h('p', null, 'No budgets set for this month.'));
+        h('div', { class: 'bar' + (p > 100 ? ' over' : ''), role: 'progressbar', 'aria-valuenow': Math.round(p), 'aria-valuemin': 0, 'aria-valuemax': 100 }, h('span', { style: { width: Math.min(100, p) + '%', background: p > 100 ? null : (b.cat ? catColors(c)[b.cat.localId] : null) } })),
+        h('div', { class: 'iline' }, `${money(b.spent)} of ${money(b.cap)}` + (b.spent > b.cap ? ` · over by ${money(b.spent - b.cap)}` : ` · ${money(b.cap - b.spent)} left`))); })) : h('section', { class: 'card empty' }, h('p', null, 'No budgets set for this month. Set them in the Android app, then take a new backup.')));
 }
 
 function download(name, text) {

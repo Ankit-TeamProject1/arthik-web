@@ -3,21 +3,21 @@
 import { fd, rd, ppfEpfValue, addMonths } from './calc.js';
 
 export const CATS = [
-  { key: 'fd', label: 'FD and NSC', code: 'FD', color: '#2F3F5C' },
-  { key: 'rd', label: 'RD', code: 'RD', color: '#6F86AD' },
-  { key: 'ppf', label: 'PPF', code: 'PF', color: '#9DB0CE' },
-  { key: 'epf', label: 'EPF', code: 'EP', color: '#4F8F8B' },
-  { key: 'nps', label: 'NPS', code: 'NP', color: '#5F9EA0' },
-  { key: 'apy', label: 'APY', code: 'AP', color: '#7FB5A8' },
-  { key: 'mf', label: 'Mutual Funds', code: 'MF', color: '#D08A4E' },
-  { key: 'demat', label: 'Demat', code: 'DM', color: '#B5655B' },
-  { key: 'insurance', label: 'Insurance', code: 'IN', color: '#8E7BB5' },
-  { key: 'metal', label: 'Gold and Silver', code: 'AU', color: '#C9B458' },
-  { key: 'asset', label: 'Manual Assets', code: 'MA', color: '#7C8798' },
-  { key: 'bank', label: 'Bank', code: 'BK', color: '#4C78A8' },
-  { key: 'receivable', label: 'Receivables', code: 'RC', color: '#A9825A' },
-  { key: 'kametti', label: 'Kametti', code: 'KM', color: '#B07AA1' },
-  { key: 'cash', label: 'Cash in Hand', code: 'CH', color: '#6A9F58' },
+  { key: 'fd', label: 'FD and NSC', code: 'FD', color: '#3B82F6', ill: 'fd' },
+  { key: 'rd', label: 'RD', code: 'RD', color: '#14B8A6', ill: 'rd' },
+  { key: 'ppf', label: 'PPF', code: 'PF', color: '#8B5CF6', ill: 'ppf' },
+  { key: 'epf', label: 'EPF', code: 'EP', color: '#6366F1', ill: 'epf' },
+  { key: 'nps', label: 'NPS', code: 'NP', color: '#F59E0B', ill: 'nps' },
+  { key: 'apy', label: 'APY', code: 'AP', color: '#EC4899', ill: 'apy' },
+  { key: 'mf', label: 'Mutual Funds', code: 'MF', color: '#0EA5E9', ill: 'mf' },
+  { key: 'demat', label: 'Demat', code: 'DM', color: '#10B981', ill: 'demat' },
+  { key: 'insurance', label: 'Insurance', code: 'IN', color: '#06B6D4', ill: 'ins' },
+  { key: 'metal', label: 'Gold and Silver', code: 'AU', color: '#EAB308', ill: 'gold' },
+  { key: 'asset', label: 'Manual Assets', code: 'MA', color: '#A16207', ill: 'manual' },
+  { key: 'bank', label: 'Bank', code: 'BK', color: '#2563EB', ill: 'bank' },
+  { key: 'receivable', label: 'Receivables', code: 'RC', color: '#22C55E', ill: 'recv' },
+  { key: 'kametti', label: 'Kametti', code: 'KM', color: '#F97316', ill: 'kam' },
+  { key: 'cash', label: 'Cash in Hand', code: 'CH', color: '#16A34A', ill: 'cash' },
 ];
 
 const live = (a) => (a || []).filter(x => !x.isArchived);
@@ -162,7 +162,8 @@ function goalProgress(book, cats) {
 /** Months of spending covered, as a rough health indicator is left for Phase 3. */
 
 // ---- formatting helpers (Indian digit grouping) ----
-let SYM = '₹', INDIAN = true;
+let SYM = '₹', INDIAN = true, MASK = false;
+export function setMask(v) { MASK = !!v; }
 export function setCurrency(code) {
   INDIAN = !code || code === 'INR';
   try { SYM = INDIAN ? '₹' : new Intl.NumberFormat('en', { style: 'currency', currency: code }).formatToParts(0).find(p => p.type === 'currency').value; }
@@ -170,6 +171,7 @@ export function setCurrency(code) {
 }
 export function money(n) {
   if (n == null || isNaN(n)) return '—';
+  if (MASK) return SYM + '••••••';
   const neg = n < 0; let s = Math.round(Math.abs(n)).toString();
   if (INDIAN) { if (s.length > 3) { const last3 = s.slice(-3); let rest = s.slice(0, -3); rest = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ','); s = rest + ',' + last3; } }
   else s = s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -215,5 +217,5 @@ export function computeExpense(book, now = Date.now()) {
   const upcoming = (book.recurringRules || []).filter(r => !r.isPaused && r.nextRunAt <= now + 7 * 86400000 && (!r.endDate || r.nextRunAt <= r.endDate))
     .sort((a, b) => a.nextRunAt - b.nextRunAt).map(r => ({ ...r, account: acc[r.accountLocalId], cat: cat[r.categoryLocalId] }));
   const owed = (book.expenseReceivables || []).filter(r => !r.isCollected);
-  return { txs, acc, cat, accounts, today, month, monthIncome, budgets, topCats, upcoming, owed, total: accounts.reduce((s, a) => s + a.balance, 0) };
+  return { txs, acc, cat, accounts, rulesAll: book.recurringRules || [], today, month, monthIncome, budgets, topCats, upcoming, owed, total: accounts.reduce((s, a) => s + a.balance, 0) };
 }
