@@ -11,8 +11,8 @@ button{cursor:pointer}
 .small{font-size:12px;color:var(--mut);margin-top:8px}
 .center{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:24px 16px;background:var(--soft)}
 .brand{display:flex;align-items:center;gap:10px}.brand.sm{padding:4px 12px 20px}
-.logo{width:34px;height:34px;border-radius:6px;background:var(--brand);color:#fff;font-weight:700;font-size:19px;display:flex;align-items:center;justify-content:center}
-.sm .logo{width:30px;height:30px;font-size:17px}
+.logo{width:40px;height:40px;object-fit:contain;display:block}
+.sm .logo{width:34px;height:34px}
 .brandname{font-size:22px;font-weight:600;color:var(--ink2);letter-spacing:.01em}.sm .brandname{font-size:19px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:16px 18px;margin-bottom:14px}
 .card.auth{width:100%;max-width:400px;padding:28px;display:flex;flex-direction:column;gap:12px;margin:0;box-shadow:0 2px 12px rgba(0,0,0,.06)}
@@ -85,4 +85,14 @@ a.tile:hover{border-color:var(--pri)}
 }
 :focus-visible{outline:2px solid var(--pri);outline-offset:2px}
 @media print{.side,.layout>.nav,.btn,.top select{display:none!important}body{background:#fff}}
-.top select{max-width:100%;min-width:0;flex:0 1 220px}.top>div{flex:1 1 140px}
+.top>div{flex:1 1 140px}
+.center .logo{width:64px;height:64px}.center .brandname{font-size:26px}
+
+.mbar{margin-bottom:12px}.mbar .brand.sm{padding:0 0 10px}
+.bookbox{margin:0 0 14px;padding:0 2px}.bookpick{width:100%;max-width:100%}
+.bookname{font-size:13px;font-weight:600;color:var(--mut2);padding:6px 4px}
+.side .bookbox{margin:0 0 12px 0;padding:0 2px 12px;border-bottom:1px solid var(--line)}
+.side .brand.sm{padding:4px 4px 12px}
+@media (min-width:900px){.mbar{display:none}}
+.bookkind{font-size:11px;color:var(--mut);margin:4px 2px 0;letter-spacing:.04em;text-transform:uppercase;font-weight:600}
+.eye{background:none;border:1px solid var(--line2);border-radius:3px;color:var(--pri);font-size:12px;font-weight:600;min-height:30px;padding:0 12px}

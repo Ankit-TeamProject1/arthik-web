@@ -41,7 +41,7 @@ function lock() { S.data = null; view.cache = null; clearTimeout(lockTimer); if 
 
 // ---------- screens: welcome / sign-in ----------
 function shell(...content) {
-  return h('div', { class: 'center' }, h('div', { class: 'brand' }, h('div', { class: 'logo' }, 'A'), h('div', { class: 'brandname' }, 'Arthik')), ...content);
+  return h('div', { class: 'center' }, h('div', { class: 'brand' }, h('img', { class: 'logo', src: 'icons/logo.png', alt: '', width: 40, height: 40 }), h('div', { class: 'brandname' }, 'Arthik')), ...content);
 }
 function card(...kids) { return h('section', { class: 'card auth' }, ...kids); }
 function errBox() { return S.error ? h('div', { class: 'err', role: 'alert' }, S.error) : null; }
@@ -197,8 +197,9 @@ function route() {
   else body = pageDashboard();
   const active = ['cat'].includes(page) ? 'dashboard' : (NAV.find(n => n.id === page) ? page : 'dashboard');
   const nav = h('nav', { class: 'nav', 'aria-label': 'Main' }, NAV.map(n => h('a', { href: '#/' + n.id, class: n.id === active ? 'on' : '', 'aria-current': n.id === active ? 'page' : null }, h('span', { class: 'dot' }), n.label)));
-  const side = h('aside', { class: 'side' }, h('div', { class: 'brand sm' }, h('div', { class: 'logo' }, 'A'), h('div', { class: 'brandname' }, 'Arthik')), nav.cloneNode(true));
-  mount(h('div', { class: 'layout' }, side, h('main', { class: 'main' }, body, h('div', { class: 'foot' }, 'Arthik web ' + APP_VERSION + ' · view only')), nav));
+  const brandRow = () => h('div', { class: 'brand sm' }, h('img', { class: 'logo', src: 'icons/logo.png', alt: '', width: 40, height: 40 }), h('div', { class: 'brandname' }, 'Arthik'));
+  const side = h('aside', { class: 'side' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker()), nav.cloneNode(true));
+  mount(h('div', { class: 'layout' }, side, h('main', { class: 'main' }, h('div', { class: 'mbar' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker())), body, h('div', { class: 'foot' }, 'Arthik web ' + APP_VERSION + ' · view only')), nav));
   window.scrollTo(0, 0);
 }
 addEventListener('hashchange', () => { if (S.data) route(); });
@@ -207,11 +208,18 @@ function emptyState() {
   return h('div', null, h('h1', null, 'No books found'), h('p', null, 'Your backup has no active books.'));
 }
 
-function bookHeader(title, sub) {
+function bookPicker() {
   const books = activeBooks(S.data);
+  if (!books.length) return null;
+  const cur = currentBook();
+  const kind = h('div', { class: 'bookkind' }, cur.bookType === 'EXPENSE' ? 'Expense book' : 'Wealth book');
+  if (books.length < 2) return h('div', null, h('div', { class: 'bookname' }, cur.name), kind);
+  return h('div', null, h('select', { class: 'bookpick', 'aria-label': 'Book', onchange: e => { S.bookIdx = +e.target.value; location.hash = '#/dashboard'; route(); } },
+    books.map((b, i) => h('option', { value: i, selected: i === S.bookIdx }, b.name))), kind);
+}
+function bookHeader(title, sub) {
   return h('header', { class: 'top' },
     h('div', null, sub ? h('div', { class: 'crumb' }, sub) : null, h('h1', null, title)),
-    books.length > 1 ? h('select', { 'aria-label': 'Book', onchange: e => { S.bookIdx = +e.target.value; location.hash = '#/dashboard'; route(); } }, books.map((b, i) => h('option', { value: i, selected: i === S.bookIdx }, b.name + (b.bookType === 'EXPENSE' ? ' (expenses)' : ' (wealth)')))) : null,
     h('button', { class: 'btn ghost', onclick: lock }, 'Lock'));
 }
 
@@ -235,6 +243,10 @@ function trend(book, nw) {
   return svg('svg', { viewBox: `0 0 ${W} ${H}`, class: 'trend', preserveAspectRatio: 'none', role: 'img', 'aria-label': 'Net Worth over time' }, svg('polyline', { points: xy, fill: 'none', stroke: '#387ed1', 'stroke-width': 4, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke' }));
 }
 
+const hidden = () => { try { return localStorage.getItem('arthik.hide') === '1'; } catch { return false; } };
+const setHidden = (v) => { try { v ? localStorage.setItem('arthik.hide', '1') : localStorage.removeItem('arthik.hide'); } catch {} };
+const mask = (t) => hidden() ? t.replace(/[0-9,]+/, '••••••') : t;
+
 function pageDashboard() {
   const c = computed(), book = currentBook();
   const d = donut(c);
@@ -250,9 +262,13 @@ function pageDashboard() {
   });
   tiles.push(h('a', { class: 'tile', href: '#/liabilities' }, h('div', { class: 'tile-top' }, h('span', { class: 'tname' }, 'Liabilities'), h('span', { class: 'chip', style: { background: '#B5655B' } }, 'LI')), h('div', { class: 'tval' }, money(c.liabTotal)), h('div', { class: 'tnote' }, c.liabilities.length + ' entries')));
   return h('div', null, bookHeader('Dashboard', book.name),
-    h('section', { class: 'card hero' }, h('div', { class: 'lbl' }, 'Net Worth'), h('div', { class: 'big' }, money(c.netWorth)),
-      h('div', { class: 'hsub' }, h('span', null, 'Assets ', h('b', null, money(c.assets))), h('span', null, 'Liabilities ', h('b', null, money(c.liabTotal)))),
-      change !== null ? h('div', { class: 'tnote ' + (change >= 0 ? 'up' : 'down') }, pct(change) + ' vs about a month ago') : null, trend(book, c.netWorth)),
+    h('section', { class: 'card hero' },
+      h('div', { class: 'irow' }, h('div', { class: 'lbl' }, 'Net Worth'),
+        h('button', { class: 'eye', 'aria-pressed': hidden(), 'aria-label': hidden() ? 'Show Net Worth' : 'Hide Net Worth', onclick: () => { setHidden(!hidden()); route(); } }, hidden() ? 'Show' : 'Hide')),
+      h('div', { class: 'big' }, mask(money(c.netWorth))),
+      h('div', { class: 'hsub' }, h('span', null, 'Assets ', h('b', null, mask(money(c.assets)))), h('span', null, 'Liabilities ', h('b', null, mask(money(c.liabTotal))))),
+      change !== null && !hidden() ? h('div', { class: 'tnote ' + (change >= 0 ? 'up' : 'down') }, pct(change) + ' vs about a month ago') : null,
+      hidden() ? null : trend(book, c.netWorth)),
     h('section', { class: 'card alloc' }, d.svg, h('ul', { class: 'legend' }, d.parts.sort((a, b) => b.total - a.total).map(p => h('li', null, h('span', { class: 'sw', style: { background: p.color } }), `${p.label} ${(p.total / d.tot * 100).toFixed(1)}%`)))),
     h('h2', null, 'Categories'), h('div', { class: 'grid' }, tiles),
     h('div', { class: 'small' }, 'Prices and NAVs are the last ones saved by your phone. Live refresh arrives in a later phase.'));
@@ -423,4 +439,4 @@ async function start() {
   screenUnlock();
 }
 start();
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
