@@ -219,7 +219,7 @@ function donut(c) {
   const parts = c.cats.filter(x => x.total > 0), tot = parts.reduce((s, x) => s + x.total, 0);
   const R = 52, C = 2 * Math.PI * R; let off = 0;
   const s = svg('svg', { viewBox: '0 0 140 140', class: 'donut', role: 'img', 'aria-label': 'Asset allocation' });
-  s.append(svg('circle', { cx: 70, cy: 70, r: R, fill: 'none', stroke: '#D5DAE3', 'stroke-width': 22 }));
+  s.append(svg('circle', { cx: 70, cy: 70, r: R, fill: 'none', stroke: 'rgba(128,128,128,.25)', 'stroke-width': 22 }));
   parts.forEach(p => { const len = tot ? p.total / tot * C : 0; s.append(svg('circle', { cx: 70, cy: 70, r: R, fill: 'none', stroke: p.color, 'stroke-width': 22, 'stroke-dasharray': `${len} ${C - len}`, 'stroke-dashoffset': -off, transform: 'rotate(-90 70 70)' })); off += len; });
   return { svg: s, parts, tot };
 }
@@ -232,7 +232,7 @@ function trend(book, nw) {
   if (pts.length < 2) return h('div', { class: 'small' }, 'The Net Worth trend appears once there is more than one day of history.');
   const W = 600, H = 150, min = Math.min(...pts.map(p => p.v)), max = Math.max(...pts.map(p => p.v)), span = max - min || 1, t0 = pts[0].t, t1 = pts[pts.length - 1].t || 1;
   const xy = pts.map(p => `${((p.t - t0) / ((t1 - t0) || 1) * (W - 10) + 5).toFixed(1)},${(H - 12 - (p.v - min) / span * (H - 24)).toFixed(1)}`).join(' ');
-  return svg('svg', { viewBox: `0 0 ${W} ${H}`, class: 'trend', preserveAspectRatio: 'none', role: 'img', 'aria-label': 'Net Worth over time' }, svg('polyline', { points: xy, fill: 'none', stroke: '#2F3F5C', 'stroke-width': 4, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke' }));
+  return svg('svg', { viewBox: `0 0 ${W} ${H}`, class: 'trend', preserveAspectRatio: 'none', role: 'img', 'aria-label': 'Net Worth over time' }, svg('polyline', { points: xy, fill: 'none', stroke: '#387ed1', 'stroke-width': 4, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke' }));
 }
 
 function pageDashboard() {
@@ -388,6 +388,8 @@ function pageSettings() {
         S.enc ? h('button', { class: 'btn', onclick: () => download('arthik-backup-' + new Date().toISOString().slice(0, 10) + '.json', S.enc) }, 'Download backup (protected)') : null,
         h('button', { class: 'btn', onclick: () => { if (confirm('This saves your data WITHOUT a password. Keep the file somewhere safe.')) download('arthik-backup-unprotected.json', JSON.stringify(S.data, null, 2)); } }, 'Download unprotected copy'))),
     !S.enc ? null : h('section', { class: 'card' }, h('h2', null, 'Replace data'), h('p', { class: 'small' }, 'Load a newer Android backup over this file.'), h('button', { class: 'btn', onclick: () => screenSetup(true) }, 'Replace from a backup file')),
+    h('section', { class: 'card' }, h('h2', null, 'Appearance'), h('div', { class: 'row' },
+      ['Light', 'Dark', 'Match device'].map(t => h('button', { class: 'btn', onclick: () => { setTheme(t === 'Match device' ? null : t.toLowerCase()); route(); } }, t)))),
     h('section', { class: 'card' }, h('h2', null, 'Session'), h('div', { class: 'row' },
       h('button', { class: 'btn', onclick: lock }, 'Lock now'),
       S.enc ? h('button', { class: 'btn', onclick: refresh }, 'Reload from Dropbox') : null,
@@ -397,6 +399,11 @@ async function refresh() {
   try { const f = await dbx.download(); if (f) { S.enc = f.text; S.rev = f.rev; S.modified = f.modified; S.offline = false; cacheSave(); S.data = null; screenUnlock('Reloaded. Enter your password.'); } }
   catch (e) { alert(e.message); }
 }
+
+// ---------- theme ----------
+function setTheme(t) { try { if (t) localStorage.setItem('arthik.theme', t); else localStorage.removeItem('arthik.theme'); } catch {} applyTheme(); }
+function applyTheme() { let t = null; try { t = localStorage.getItem('arthik.theme'); } catch {} if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; }
+applyTheme();
 
 // ---------- start ----------
 async function start() {

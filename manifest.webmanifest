@@ -1,2 +1,2 @@
-{"name":"Arthik","short_name":"Arthik","start_url":".","scope":".","display":"standalone","background_color":"#F5F7FA","theme_color":"#2F3F5C",
+{"name":"Arthik","short_name":"Arthik","start_url":".","scope":".","display":"standalone","background_color":"#ffffff","theme_color":"#ffffff",
  "icons":[{"src":"icons/icon-192.png","sizes":"192x192","type":"image/png"},{"src":"icons/icon-512.png","sizes":"512x512","type":"image/png"},{"src":"icons/icon-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"}]}
