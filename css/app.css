@@ -70,3 +70,10 @@ select{width:auto;height:44px}
 }
 :focus-visible{outline:3px solid var(--pri);outline-offset:2px}
 @media print{.side,.layout>.nav,.btn,.top select{display:none!important}body{background:#fff}}
+
+.tx{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.tx:last-child{border-bottom:0}
+.dotc{width:12px;height:12px;border-radius:6px;flex:0 0 auto}.txm{flex:1;min-width:0}.txt{font-size:15px;font-weight:500;overflow-wrap:anywhere}
+.txa{font-size:15px;font-weight:700;white-space:nowrap}.dayh{font-size:12px;font-weight:500;color:var(--mut);margin:12px 0 2px;letter-spacing:.04em}
+.catrow{margin-bottom:10px}.bar.over span{background:var(--down)}
+.filters{display:flex;flex-wrap:wrap;gap:10px}.filters input[type=search]{flex:1 1 240px;height:44px;border-radius:22px;border:1px solid var(--line);padding:0 16px;background:var(--card2);color:var(--ink);min-width:0}
+.tval.down{color:var(--down)}

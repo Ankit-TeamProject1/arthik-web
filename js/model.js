@@ -24,6 +24,7 @@ const live = (a) => (a || []).filter(x => !x.isArchived);
 const sum = (a, f) => a.reduce((s, x) => s + f(x), 0);
 const upper = (s) => (s || '').charAt(0).toUpperCase() + (s || '').slice(1).toLowerCase();
 
+export function activeBooks(data) { return (data.books || []).filter(b => !b.isArchived); }
 export function wealthBooks(data) { return (data.books || []).filter(b => b.bookType === 'WEALTH' && !b.isArchived); }
 export function expenseBooks(data) { return (data.books || []).filter(b => b.bookType === 'EXPENSE' && !b.isArchived); }
 
@@ -161,11 +162,18 @@ function goalProgress(book, cats) {
 /** Months of spending covered, as a rough health indicator is left for Phase 3. */
 
 // ---- formatting helpers (Indian digit grouping) ----
+let SYM = '₹', INDIAN = true;
+export function setCurrency(code) {
+  INDIAN = !code || code === 'INR';
+  try { SYM = INDIAN ? '₹' : new Intl.NumberFormat('en', { style: 'currency', currency: code }).formatToParts(0).find(p => p.type === 'currency').value; }
+  catch { SYM = code + ' '; }
+}
 export function money(n) {
   if (n == null || isNaN(n)) return '—';
   const neg = n < 0; let s = Math.round(Math.abs(n)).toString();
-  if (s.length > 3) { const last3 = s.slice(-3); let rest = s.slice(0, -3); rest = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ','); s = rest + ',' + last3; }
-  return (neg ? '−' : '') + '₹' + s;
+  if (INDIAN) { if (s.length > 3) { const last3 = s.slice(-3); let rest = s.slice(0, -3); rest = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ','); s = rest + ',' + last3; } }
+  else s = s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return (neg ? '−' : '') + SYM + s;
 }
 export function pct(n) { return (n >= 0 ? '▲ ' : '▼ ') + Math.abs(n).toFixed(1) + '%'; }
 export function fmtDate(ts) {
@@ -173,3 +181,39 @@ export function fmtDate(ts) {
   return new Date(ts).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 export { addMonths };
+
+// ---------- Expense books ----------
+const pad = (n) => String(n).padStart(2, '0');
+export const localMonth = (ts) => { const d = new Date(ts); return d.getFullYear() + '-' + pad(d.getMonth() + 1); };
+// The Android app groups budgets by UTC month, so budgets here do the same to give the same numbers.
+export const utcMonth = (ts) => { const d = new Date(ts); return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1); };
+
+export function computeExpense(book, now = Date.now()) {
+  const txs = (book.transactions || []).slice().sort((a, b) => b.occurredAt - a.occurredAt);
+  const accAll = book.accounts || [], catAll = book.categories || [];
+  const acc = Object.fromEntries(accAll.map(a => [a.localId, a])), cat = Object.fromEntries(catAll.map(c => [c.localId, c]));
+  const bal = Object.fromEntries(accAll.map(a => [a.localId, 0]));
+  txs.forEach(t => {
+    if (t.type === 'INCOME') bal[t.accountLocalId] = (bal[t.accountLocalId] || 0) + t.amount;
+    else if (t.type === 'EXPENSE') bal[t.accountLocalId] = (bal[t.accountLocalId] || 0) - t.amount;
+    else if (t.type === 'TRANSFER') { bal[t.accountLocalId] = (bal[t.accountLocalId] || 0) - t.amount; if (t.toAccountLocalId != null) bal[t.toAccountLocalId] = (bal[t.toAccountLocalId] || 0) + t.amount; }
+  });
+  const accounts = accAll.filter(a => !a.isArchived).map(a => ({ ...a, balance: bal[a.localId] || 0 }));
+  const sod = new Date(now); sod.setHours(0, 0, 0, 0);
+  const eod = sod.getTime() + 86400000 - 1;
+  const mk = localMonth(now);
+  let today = 0, month = 0, monthIncome = 0;
+  txs.forEach(t => {
+    if (t.type === 'EXPENSE' && t.occurredAt >= sod.getTime() && t.occurredAt <= eod) today += t.amount;
+    if (localMonth(t.occurredAt) === mk) { if (t.type === 'EXPENSE') month += t.amount; if (t.type === 'INCOME') monthIncome += t.amount; }
+  });
+  const um = utcMonth(now), spentByCat = {};
+  txs.forEach(t => { if (t.type === 'EXPENSE' && t.categoryLocalId != null && utcMonth(t.occurredAt) === um) spentByCat[t.categoryLocalId] = (spentByCat[t.categoryLocalId] || 0) + t.amount; });
+  const budgets = (book.budgets || []).filter(b => b.month === um).map(b => ({ cat: cat[b.categoryLocalId], cap: b.capAmount, spent: spentByCat[b.categoryLocalId] || 0 }))
+    .sort((a, b) => (b.spent / b.cap) - (a.spent / a.cap));
+  const topCats = Object.entries(spentByCat).map(([id, v]) => ({ cat: cat[id], spent: v })).sort((a, b) => b.spent - a.spent);
+  const upcoming = (book.recurringRules || []).filter(r => !r.isPaused && r.nextRunAt <= now + 7 * 86400000 && (!r.endDate || r.nextRunAt <= r.endDate))
+    .sort((a, b) => a.nextRunAt - b.nextRunAt).map(r => ({ ...r, account: acc[r.accountLocalId], cat: cat[r.categoryLocalId] }));
+  const owed = (book.expenseReceivables || []).filter(r => !r.isCollected);
+  return { txs, acc, cat, accounts, today, month, monthIncome, budgets, topCats, upcoming, owed, total: accounts.reduce((s, a) => s + a.balance, 0) };
+}

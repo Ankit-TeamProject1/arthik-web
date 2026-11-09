@@ -1,7 +1,7 @@
 import { APP_VERSION, AUTO_LOCK_MS } from './config.js';
 import * as dbx from './dropbox.js';
 import { encrypt, decrypt, isEncrypted } from './crypto.js';
-import { CATS, computeBook, wealthBooks, expenseBooks, money, pct, fmtDate } from './model.js';
+import { CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, money, pct, fmtDate } from './model.js';
 
 const root = document.getElementById('app');
 const S = { enc: null, rev: null, modified: null, data: null, bookIdx: 0, offline: false, error: '', busy: false };
@@ -161,15 +161,18 @@ function screenSetup(replacing) {
 }
 
 // ---------- main app ----------
-const NAV = [
+const NAV_W = [
   { id: 'dashboard', label: 'Home' }, { id: 'liabilities', label: 'Liabilities' }, { id: 'goals', label: 'Goals' },
   { id: 'rent', label: 'Rent' }, { id: 'settings', label: 'Settings' },
 ];
+const NAV_E = [
+  { id: 'dashboard', label: 'Home' }, { id: 'transactions', label: 'Entries' }, { id: 'budgets', label: 'Budgets' }, { id: 'settings', label: 'Settings' },
+];
 const view = { cache: null };
-function currentBook() { const w = wealthBooks(S.data); return w[Math.min(S.bookIdx, w.length - 1)] || null; }
+function currentBook() { const w = activeBooks(S.data); return w[Math.min(S.bookIdx, w.length - 1)] || null; }
 function computed() {
   const b = currentBook(); if (!b) return null;
-  if (!view.cache || view.cache.book !== b) view.cache = { book: b, c: computeBook(b, S.data.rateHistory || []) };
+  if (!view.cache || view.cache.book !== b) view.cache = { book: b, c: b.bookType === 'EXPENSE' ? computeExpense(b) : computeBook(b, S.data.rateHistory || []) };
   return view.cache.c;
 }
 
@@ -177,9 +180,15 @@ function route() {
   if (!S.data) return screenUnlock();
   const hash = location.hash.replace(/^#\/?/, '') || 'dashboard';
   const [page, arg] = hash.split('/');
-  const books = wealthBooks(S.data);
+  const book = currentBook();
   let body;
-  if (!books.length) body = emptyState();
+  if (book) setCurrency(book.currencyCode);
+  const isExp = !!book && book.bookType === 'EXPENSE';
+  const NAV = isExp ? NAV_E : NAV_W;
+  if (!book) body = emptyState();
+  else if (isExp && page === 'transactions') body = pageEntries();
+  else if (isExp && page === 'budgets') body = pageBudgets();
+  else if (isExp && page !== 'settings') body = pageExpenseDashboard();
   else if (page === 'cat') body = pageCategory(arg);
   else if (page === 'liabilities') body = pageLiabilities();
   else if (page === 'goals') body = pageGoals();
@@ -195,14 +204,14 @@ function route() {
 addEventListener('hashchange', () => { if (S.data) route(); });
 
 function emptyState() {
-  return h('div', null, h('h1', null, 'No wealth book found'), h('p', null, 'Your backup has no Wealth book. Expense books arrive in the next phase.'));
+  return h('div', null, h('h1', null, 'No books found'), h('p', null, 'Your backup has no active books.'));
 }
 
 function bookHeader(title, sub) {
-  const books = wealthBooks(S.data);
+  const books = activeBooks(S.data);
   return h('header', { class: 'top' },
     h('div', null, sub ? h('div', { class: 'crumb' }, sub) : null, h('h1', null, title)),
-    books.length > 1 ? h('select', { 'aria-label': 'Book', onchange: e => { S.bookIdx = +e.target.value; route(); } }, books.map((b, i) => h('option', { value: i, selected: i === S.bookIdx }, b.name))) : null,
+    books.length > 1 ? h('select', { 'aria-label': 'Book', onchange: e => { S.bookIdx = +e.target.value; location.hash = '#/dashboard'; route(); } }, books.map((b, i) => h('option', { value: i, selected: i === S.bookIdx }, b.name + (b.bookType === 'EXPENSE' ? ' (expenses)' : ' (wealth)')))) : null,
     h('button', { class: 'btn ghost', onclick: lock }, 'Lock'));
 }
 
@@ -294,6 +303,78 @@ function pageRent() {
     })) : h('p', null, 'No rented properties.'));
 }
 
+
+// ---------- Expense book pages ----------
+const dayLabel = (ts) => new Date(ts).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+function txRow(t, c) {
+  const a = c.acc[t.accountLocalId], to = c.acc[t.toAccountLocalId], cat = c.cat[t.categoryLocalId];
+  const sign = t.type === 'INCOME' ? '+' : t.type === 'EXPENSE' ? '−' : '';
+  const title = t.type === 'TRANSFER' ? `Transfer: ${a ? a.name : '?'} → ${to ? to.name : '?'}` : (cat ? cat.name : 'Uncategorised');
+  return h('div', { class: 'tx' },
+    h('span', { class: 'dotc', style: { background: cat && cat.colorHex ? (String(cat.colorHex).startsWith('#') ? cat.colorHex : '#' + String(cat.colorHex).replace(/^0x/i, '').slice(-6)) : 'var(--line)' } }),
+    h('div', { class: 'txm' }, h('div', { class: 'txt' }, title), h('div', { class: 'isub' }, [dayLabel(t.occurredAt), t.type !== 'TRANSFER' && a ? a.name : '', t.note].filter(Boolean).join(' · '))),
+    h('div', { class: 'txa ' + (t.type === 'INCOME' ? 'up' : '') }, sign + money(t.amount)));
+}
+
+function pageExpenseDashboard() {
+  const c = computed(), book = currentBook();
+  return h('div', null, bookHeader('Dashboard', book.name),
+    h('section', { class: 'card hero' }, h('div', { class: 'lbl' }, 'This month spent'), h('div', { class: 'big' }, money(c.month)),
+      h('div', { class: 'hsub' }, h('span', null, 'Today ', h('b', null, money(c.today))), h('span', null, 'Income this month ', h('b', null, money(c.monthIncome))))),
+    h('h2', null, 'Accounts'),
+    h('div', { class: 'grid' }, c.accounts.map(a => h('div', { class: 'tile' }, h('div', { class: 'tile-top' }, h('span', { class: 'tname' }, a.name), h('span', { class: 'tnote' }, a.type.replace('_', ' ').toLowerCase())),
+      h('div', { class: 'tval' + (a.balance < 0 ? ' down' : '') }, money(a.balance))))),
+    c.topCats.length ? h('div', null, h('h2', null, 'Spending by category (this month)'), h('section', { class: 'card' }, c.topCats.slice(0, 8).map(x => {
+      const pctw = c.month > 0 ? x.spent / c.month * 100 : 0;
+      return h('div', { class: 'catrow' }, h('div', { class: 'irow' }, h('span', null, x.cat ? x.cat.name : 'Uncategorised'), h('b', null, money(x.spent))), h('div', { class: 'bar' }, h('span', { style: { width: pctw + '%' } })));
+    }))) : null,
+    c.upcoming.length ? h('div', null, h('h2', null, 'Upcoming (next 7 days)'), h('div', { class: 'list' }, c.upcoming.map(r => h('div', { class: 'item' },
+      h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.name), h('div', { class: 'ival' }, money(r.amount))),
+      h('div', { class: 'isub' }, `${r.type.toLowerCase()} · ${fmtDate(r.nextRunAt)}${r.nextRunAt < Date.now() ? ' · due' : ''}`))))) : null,
+    c.owed.length ? h('div', null, h('h2', null, 'Money owed to you'), h('div', { class: 'list' }, c.owed.map(r => h('div', { class: 'item' },
+      h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.personName), h('div', { class: 'ival' }, money(r.amount))), r.note ? h('div', { class: 'isub' }, r.note) : null)))) : null,
+    h('h2', null, 'Recent entries'),
+    h('section', { class: 'card' }, c.txs.slice(0, 10).map(t => txRow(t, c)), c.txs.length ? h('a', { href: '#/transactions', class: 'btn ghost' }, 'See all entries') : h('p', null, 'No entries yet.')));
+}
+
+const ef = { q: '', type: 'ALL', month: 'ALL', limit: 100 };
+function pageEntries() {
+  const c = computed();
+  const months = [...new Set(c.txs.map(t => { const d = new Date(t.occurredAt); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); }))];
+  const q = ef.q.trim().toLowerCase();
+  const rows = c.txs.filter(t => {
+    if (ef.type !== 'ALL' && t.type !== ef.type) return false;
+    const d = new Date(t.occurredAt), mk = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    if (ef.month !== 'ALL' && mk !== ef.month) return false;
+    if (!q) return true;
+    const cat = c.cat[t.categoryLocalId], a = c.acc[t.accountLocalId];
+    return [t.note, cat && cat.name, a && a.name, String(t.amount)].filter(Boolean).join(' ').toLowerCase().includes(q);
+  });
+  const shown = rows.slice(0, ef.limit);
+  const spent = rows.filter(t => t.type === 'EXPENSE').reduce((s, t) => s + t.amount, 0), got = rows.filter(t => t.type === 'INCOME').reduce((s, t) => s + t.amount, 0);
+  const search = h('input', { type: 'search', placeholder: 'Search note, category, account or amount', value: ef.q, 'aria-label': 'Search entries' });
+  search.addEventListener('change', () => { ef.q = search.value; ef.limit = 100; route(); });
+  const sel = (opts, cur, set, label) => h('select', { 'aria-label': label, onchange: e => { set(e.target.value); ef.limit = 100; route(); } }, opts.map(([v, l]) => h('option', { value: v, selected: v === cur }, l)));
+  const groups = []; shown.forEach(t => { const k = dayLabel(t.occurredAt); const g = groups[groups.length - 1]; if (g && g.k === k) g.rows.push(t); else groups.push({ k, rows: [t] }); });
+  return h('div', null, bookHeader('Entries', currentBook().name),
+    h('div', { class: 'filters' }, search,
+      sel([['ALL', 'All types'], ['EXPENSE', 'Expenses'], ['INCOME', 'Income'], ['TRANSFER', 'Transfers']], ef.type, v => ef.type = v, 'Type'),
+      sel([['ALL', 'All months'], ...months.map(m => [m, new Date(m + '-15').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })])], ef.month, v => ef.month = v, 'Month')),
+    h('div', { class: 'hsub', style: { margin: '10px 0' } }, h('span', null, rows.length + ' entries'), h('span', null, 'Spent ', h('b', null, money(spent))), h('span', null, 'Income ', h('b', null, money(got)))),
+    h('section', { class: 'card' }, groups.map(g => h('div', null, h('div', { class: 'dayh' }, g.k), g.rows.map(t => txRow(t, c)))), rows.length ? null : h('p', null, 'Nothing matches.')),
+    rows.length > shown.length ? h('button', { class: 'btn', onclick: () => { ef.limit += 200; route(); } }, `Show more (${rows.length - shown.length} left)`) : null);
+}
+
+function pageBudgets() {
+  const c = computed();
+  const mname = new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  return h('div', null, bookHeader('Budgets', mname),
+    c.budgets.length ? h('div', { class: 'list' }, c.budgets.map(b => { const p = b.cap > 0 ? b.spent / b.cap * 100 : 0;
+      return h('div', { class: 'item' }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, b.cat ? b.cat.name : 'Category'), h('div', { class: 'ival ' + (p > 100 ? 'down' : '') }, Math.round(p) + '%')),
+        h('div', { class: 'bar' + (p > 100 ? ' over' : ''), role: 'progressbar', 'aria-valuenow': Math.round(p), 'aria-valuemin': 0, 'aria-valuemax': 100 }, h('span', { style: { width: Math.min(100, p) + '%' } })),
+        h('div', { class: 'iline' }, `${money(b.spent)} of ${money(b.cap)}` + (b.spent > b.cap ? ` · over by ${money(b.spent - b.cap)}` : ` · ${money(b.cap - b.spent)} left`))); })) : h('p', null, 'No budgets set for this month.'));
+}
+
 function download(name, text) {
   const a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'application/json' })), download: name }); document.body.append(a); a.click(); a.remove();
 }
@@ -302,7 +383,7 @@ function pageSettings() {
   return h('div', null, bookHeader('Settings', 'Arthik web ' + APP_VERSION),
     h('section', { class: 'card' }, h('h2', null, 'Your data file'),
       h('p', null, 'Dropbox › Apps › Arthik › arthik-data.json'), h('p', { class: 'small' }, 'Last saved ' + (S.modified ? new Date(S.modified).toLocaleString('en-IN') : 'unknown') + (S.offline ? ' (offline copy)' : '')),
-      h('p', { class: 'small' }, `${wealthBooks(S.data).length} Wealth book(s) and ${ex.length} Expense book(s) in this file. Expense books arrive in the next phase.`),
+      h('p', { class: 'small' }, `${wealthBooks(S.data).length} Wealth book(s) and ${ex.length} Expense book(s) in this file. Use the book picker at the top to switch.`),
       h('div', { class: 'row' },
         S.enc ? h('button', { class: 'btn', onclick: () => download('arthik-backup-' + new Date().toISOString().slice(0, 10) + '.json', S.enc) }, 'Download backup (protected)') : null,
         h('button', { class: 'btn', onclick: () => { if (confirm('This saves your data WITHOUT a password. Keep the file somewhere safe.')) download('arthik-backup-unprotected.json', JSON.stringify(S.data, null, 2)); } }, 'Download unprotected copy'))),
