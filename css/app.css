@@ -154,3 +154,10 @@ a.tile:hover{border-color:var(--pri)}
 .item.clk{cursor:pointer}.item.clk:hover{background:var(--soft)}
 .swatches{display:flex;flex-wrap:wrap;gap:10px}.swatch{width:36px;height:36px;border-radius:50%;border:3px solid transparent;cursor:pointer;box-shadow:0 0 0 1px var(--line2)}.swatch.on{border-color:var(--ink2);box-shadow:0 0 0 2px var(--card) inset}
 a.btn{display:inline-block;text-decoration:none;text-align:center}
+
+.btable{display:flex;flex-direction:column;gap:2px;margin:6px 0}.brow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
+.bname{display:flex;align-items:center;gap:8px;font-weight:500}.bin{display:flex;align-items:center;gap:6px;color:var(--mut)}
+.sheet input.bamt{width:130px;text-align:right;font-size:16px}
+
+.erows{margin-top:8px}.erow{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}.erow span{flex:1;color:var(--mut2)}.erow .x{font-size:22px;padding:0 8px}
+.sheet .two input{width:100%}

@@ -45,7 +45,7 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
     const lines = [`${x.interestRate}% · matures ${fmtDate(mat)}`];
     if (!matured) lines.push(`Accrued interest (not counted yet): ${money(Math.max(0, liveV - x.principalAmount))}`);
     if (x.payoutMode === 'PAYOUT') lines.push(`Interest paid out ${x.payoutFrequency.toLowerCase()} · next ${fmtDate(fd.nextPayoutDue(x))} · ${money(fd.payoutAmount(x))}`);
-    add('fd', { id: 'fd:' + x.name, name: x.name, sub: [x.kind, x.bankName].filter(Boolean).join(' · '), value, cost: x.principalAmount, lines, excluded: x.excludeFromNetWorth });
+    add('fd', { src: x, id: 'fd:' + x.name, name: x.name, sub: [x.kind, x.bankName].filter(Boolean).join(' · '), value, cost: x.principalAmount, lines, excluded: x.excludeFromNetWorth });
   });
 
   live(book.recurringDeposits).forEach(x => {
@@ -54,7 +54,7 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
     const liveV = inst.length ? rd.currentValueFromEntries(x, inst, now) : rd.currentValueSchedule(x, now);
     const mat = rd.maturityDate(x), matured = now >= mat;
     const value = matured ? liveV : raw;
-    add('rd', { name: x.name, sub: [x.bankName, `${money(x.monthlyInstallment)}/month`].filter(Boolean).join(' · '), value, cost: raw,
+    add('rd', { src: x, name: x.name, sub: [x.bankName, `${money(x.monthlyInstallment)}/month`].filter(Boolean).join(' · '), value, cost: raw,
       lines: [`${x.interestRate}% · ${inst.length} instalments recorded · matures ${fmtDate(mat)}`,
               ...(matured ? [] : [`Accrued interest (not counted yet): ${money(Math.max(0, liveV - raw))}`])], excluded: x.excludeFromNetWorth });
   });
@@ -64,7 +64,7 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
     const principal = sum(all, d => d.amount);
     const dep = all.filter(d => d.type !== 'INTEREST').map(d => [d.depositDate, d.amount]);
     const liveV = ppfEpfValue(dep, rates('PPF'), now);
-    add('ppf', { name: x.name, sub: [x.bankOrPostOfficeName, x.accountNumber].filter(Boolean).join(' · '), value: principal, cost: sum(dep, d => d[1]),
+    add('ppf', { src: x, name: x.name, sub: [x.bankOrPostOfficeName, x.accountNumber].filter(Boolean).join(' · '), value: principal, cost: sum(dep, d => d[1]),
       lines: [`Opened ${fmtDate(x.accountOpenDate)} · ${all.length} entries`, `Interest not yet credited (not counted): ${money(Math.max(0, liveV - principal))}`], excluded: x.excludeFromNetWorth });
   });
 
@@ -74,7 +74,7 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
     const pension = sum(all.filter(c => c.tileType === 'PENSION'), c => c.amount);
     const eeP = sum(ee, c => c[1]);
     const liveV = ppfEpfValue(ee, rates('EPF'), now);
-    add('epf', { name: x.name, sub: [x.companyName, x.uan ? 'UAN ' + x.uan : ''].filter(Boolean).join(' · '), value: eeP + pension, cost: eeP,
+    add('epf', { src: x, name: x.name, sub: [x.companyName, x.uan ? 'UAN ' + x.uan : ''].filter(Boolean).join(' · '), value: eeP + pension, cost: eeP,
       lines: [`Employee + employer ${money(eeP)} · Pension ${money(pension)}`, `Interest not yet credited (not counted): ${money(Math.max(0, liveV - eeP))}`], excluded: x.excludeFromNetWorth });
   });
 
@@ -115,7 +115,7 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
     lines: [x.currentPricePerGram == null ? 'No price saved' : `${money(x.currentPricePerGram)} per gram`], excluded: x.excludeFromNetWorth }));
 
   live(book.manualAssets).forEach(x => add('asset', { name: x.name, sub: x.assetType, value: x.currentValue, lines: [`Updated ${fmtDate(x.lastUpdatedByUserAt)}`], excluded: x.excludeFromNetWorth }));
-  live(book.bankBalances).forEach(x => add('bank', { name: x.bankName, sub: x.accountDetails, value: x.currentBalance, lines: [], excluded: x.excludeFromNetWorth }));
+  live(book.bankBalances).forEach(x => add('bank', { src: x, name: x.bankName, sub: x.accountDetails, value: x.currentBalance, lines: [], excluded: x.excludeFromNetWorth }));
   live(book.wealthReceivables).forEach(x => add('receivable', { name: x.personName, sub: x.note, value: x.currentAmount, lines: [`Updated ${fmtDate(x.lastUpdatedAt)}`], excluded: x.excludeFromNetWorth }));
   live(book.kamettiAccounts).forEach(x => {
     const bal = sum(x.entries || [], e => e.amount);

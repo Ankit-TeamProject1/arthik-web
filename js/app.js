@@ -292,8 +292,9 @@ function pageDashboard() {
     h('div', { class: 'small' }, 'Prices and NAVs are the last ones saved by your phone. Live refresh arrives in a later phase.'));
 }
 
-function itemCard(it) {
-  return h('div', { class: 'item' },
+function itemCard(it, key) {
+  const ed = canEdit() && key && WSPEC[key] && it.src;
+  return h('div', { class: 'item' + (ed ? ' clk' : ''), role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openWealth(key, it) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openWealth(key, it); } : null },
     it.excluded ? h('div', { class: 'excl' }, 'Not in Net Worth') : null,
     h('div', { class: 'irow' }, h('div', { class: 'iname' }, it.name), h('div', { class: 'ival' }, money(it.value))),
     it.sub ? h('div', { class: 'isub' }, it.sub) : null,
@@ -304,7 +305,9 @@ function pageCategory(key) {
   const c = computed(), cat = c.byKey[key] || c.cats[0];
   return h('div', null, bookHeader(cat.label, 'Wealth'),
     h('section', null, h('div', { class: 'lbl' }, 'Counted toward Net Worth'), h('div', { class: 'big2' }, money(cat.total))),
-    cat.items.length ? h('div', { class: 'list' }, cat.items.sort((a, b) => b.value - a.value).map(itemCard)) : h('p', null, 'Nothing here yet.'),
+    canEdit() && WSPEC[cat.key] ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => openWealth(cat.key, null) }, '+ Add ' + WSPEC[cat.key].noun) : null,
+    canEdit() && cat.key === 'cash' ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: openCash }, 'Update cash in hand') : null,
+    cat.items.length ? h('div', { class: 'list' }, cat.items.sort((a, b) => b.value - a.value).map(it => itemCard(it, cat.key))) : h('p', { class: 'empty' }, canEdit() ? 'Nothing here yet. Use the button above to add one.' : 'Nothing here yet.'),
     h('a', { href: '#/dashboard', class: 'btn ghost' }, '← Dashboard'));
 }
 
@@ -627,6 +630,26 @@ function openBudget(cat, cap) {
       h('div', { class: 'flbl' }, 'Monthly limit'), amt, h('div', { class: 'actions' }, save, extra));
   });
 }
+
+// One table for all budgets of the month: type an amount against each category, leave the rest blank.
+function openBudgetTable() {
+  const book = currentBook(), c = computed(), month = utcMonth(monthNow());
+  const cats = (book.categories || []).filter(x => !x.isArchived);
+  const cur = Object.fromEntries((book.budgets || []).filter(b => b.month === month).map(b => [b.categoryLocalId, b.capAmount]));
+  sheetForm('Budgets for ' + monthLabel(em), api => {
+    const inputs = cats.map(x => ({ x, el: h('input', { type: 'text', inputmode: 'decimal', class: 'bamt', value: cur[x.localId] != null ? String(cur[x.localId]) : '', placeholder: '—', 'aria-label': 'Budget for ' + x.name, autocomplete: 'off' }) }));
+    const save = h('button', { type: 'button', class: 'btn primary big' }, 'Save budgets');
+    save.onclick = () => {
+      const vals = {};
+      for (const { x, el } of inputs) { const raw = el.value.trim().replace(/,/g, ''); if (!raw) continue; const v = Math.round(parseFloat(raw) * 100) / 100; if (!(v > 0)) return api.fail('“' + x.name + '”: enter a number above zero, or leave it blank.'); vals[x.localId] = v; }
+      api.run(save, 'Saving…', () => mutateBook(b => { b.budgets = (b.budgets || []).filter(y => y.month !== month || !cats.some(x => x.localId === y.categoryLocalId));
+        Object.entries(vals).forEach(([id, v]) => b.budgets.push({ categoryLocalId: +id, month, capAmount: v })); })).then(ok => ok && toast('Budgets saved ✓'));
+    };
+    return h('div', null, h('p', { class: 'small' }, 'Type a monthly limit for each category you want to track. Leave a box blank for no budget (blanking an existing one removes it).'),
+      h('div', { class: 'btable' }, inputs.map(({ x, el }) => h('label', { class: 'brow' }, h('span', { class: 'bname' }, h('span', { class: 'sw', style: { background: catColors(c)[x.localId] } }), x.name), h('span', { class: 'bin' }, '₹', el)))),
+      h('div', { class: 'actions' }, save));
+  });
+}
 function copyBudgets() {
   const month = utcMonth(monthNow()), prev = utcMonth(new Date(new Date().getFullYear(), new Date().getMonth() + em - 1, 15, 12).getTime());
   return mutateBook(b => { b.budgets = b.budgets || []; (b.budgets.filter(x => x.month === prev)).forEach(x => { if (!b.budgets.some(y => y.month === month && y.categoryLocalId === x.categoryLocalId)) b.budgets.push({ categoryLocalId: x.categoryLocalId, month, capAmount: x.capAmount }); }); });
@@ -652,6 +675,123 @@ function pageCategories() {
     canEdit() ? h('button', { class: 'btn primary', style: { margin: '12px 0' }, onclick: () => openCategory(null) }, '+ Add category') : null,
     act.length ? h('div', { class: 'list' }, act.map(row)) : h('section', { class: 'card empty' }, h('p', null, 'No categories yet.')),
     arch.length ? h('div', null, h('h2', null, 'Archived'), h('div', { class: 'list' }, arch.map(row))) : null);
+}
+
+// ---------- Phase 3: editing Wealth items (FD, RD, PPF, EPF, Bank, Cash) ----------
+const F = {  // field helpers
+  text: (k, label, o = {}) => ({ k, label, t: 'text', ...o }), num: (k, label, o = {}) => ({ k, label, t: 'num', ...o }),
+  date: (k, label, o = {}) => ({ k, label, t: 'date', ...o }), chips: (k, label, opts, o = {}) => ({ k, label, t: 'chips', opts, ...o }),
+};
+const COMPOUND = [['MONTHLY', 'Monthly'], ['QUARTERLY', 'Quarterly'], ['ANNUALLY', 'Yearly'], ['CUMULATIVE', 'At maturity']];
+const WSPEC = {
+  fd: { arr: 'fixedDeposits', nameKey: 'name', noun: 'FD / NSC', fields: [
+      F.chips('kind', 'Type', [['FD', 'Fixed Deposit'], ['NSC', 'NSC']]), F.text('name', 'Name', { req: 1, ph: 'e.g. HDFC FD 2026' }), F.text('bankName', 'Bank (optional)'), F.text('accountOrCertificateNumber', 'Account / certificate no. (optional)'),
+      F.num('principalAmount', 'Amount invested', { req: 1, min: 0.01, rs: 1 }), F.date('startDate', 'Start date', { req: 1 }), F.num('interestRate', 'Interest rate (% per year)', { req: 1 }),
+      F.num('tenureMonths', 'Tenure (months)', { req: 1, int: 1, min: 1 }), F.num('tenureExtraDays', 'Extra days (optional)', { int: 1, def: 0 }),
+      F.chips('interestType', 'Interest', [['COMPOUND', 'Compound'], ['SIMPLE', 'Simple']]),
+      F.chips('compoundingFrequency', 'Compounds', COMPOUND, { show: s => s.interestType === 'COMPOUND' && s.payoutMode !== 'PAYOUT' }),
+      F.chips('payoutMode', 'Interest is', [['CUMULATIVE', 'Added to the deposit'], ['PAYOUT', 'Paid out to you']]),
+      F.chips('payoutFrequency', 'Paid out', COMPOUND.slice(0, 3), { show: s => s.payoutMode === 'PAYOUT' }),
+      F.chips('autoRenewMode', 'On maturity', [['DISABLED', 'Do nothing'], ['PRINCIPAL_ONLY', 'Renew principal'], ['PRINCIPAL_PLUS_INTEREST', 'Renew with interest']]) ],
+    make: () => ({ kind: 'FD', name: '', bankName: '', accountOrCertificateNumber: '', principalAmount: '', startDate: Date.now(), interestRate: '', tenureMonths: '', tenureExtraDays: 0, interestType: 'COMPOUND', compoundingFrequency: 'QUARTERLY', payoutMode: 'CUMULATIVE', payoutFrequency: 'MONTHLY', autoRenewMode: 'DISABLED', lastInterestPayoutAt: null, isArchived: false }) },
+  rd: { arr: 'recurringDeposits', nameKey: 'name', noun: 'RD', fields: [
+      F.text('name', 'Name', { req: 1, ph: 'e.g. Kotak RD' }), F.text('bankName', 'Bank (optional)'), F.text('accountOrCertificateNumber', 'Account no. (optional)'),
+      F.num('monthlyInstallment', 'Monthly instalment', { req: 1, min: 0.01, rs: 1 }), F.date('startDate', 'Start date', { req: 1 }), F.num('interestRate', 'Interest rate (% per year)', { req: 1 }),
+      F.num('tenureMonths', 'Tenure (months)', { req: 1, int: 1, min: 1 }), F.chips('compoundingFrequency', 'Compounds', COMPOUND.slice(0, 3)),
+      F.chips('autoRenewMode', 'On maturity', [['DISABLED', 'Do nothing'], ['PRINCIPAL_ONLY', 'Renew principal'], ['PRINCIPAL_PLUS_INTEREST', 'Renew with interest']]) ],
+    entries: { key: 'installments', label: 'Instalments paid', dateKey: 'installmentDate', amtLabel: 'Amount', addLabel: 'Add instalment' },
+    make: () => ({ name: '', bankName: '', accountOrCertificateNumber: '', monthlyInstallment: '', startDate: Date.now(), interestRate: '', tenureMonths: '', compoundingFrequency: 'QUARTERLY', autoRenewMode: 'DISABLED', installments: [], isArchived: false }) },
+  ppf: { arr: 'ppfAccounts', nameKey: 'name', noun: 'PPF account', fields: [
+      F.text('name', 'Name', { req: 1, ph: 'e.g. SBI PPF' }), F.text('bankOrPostOfficeName', 'Bank / post office (optional)'), F.text('accountNumber', 'Account no. (optional)'), F.date('accountOpenDate', 'Account opened on', { req: 1 }) ],
+    entries: { key: 'deposits', label: 'Deposits, interest and withdrawals', dateKey: 'depositDate', amtLabel: 'Amount', addLabel: 'Add entry', typeKey: 'type', types: [['DEPOSIT', 'Deposit'], ['INTEREST', 'Interest credited'], ['DEDUCTION', 'Withdrawal']] },
+    make: () => ({ name: '', bankOrPostOfficeName: '', accountNumber: '', accountOpenDate: Date.now(), deposits: [], isArchived: false }) },
+  epf: { arr: 'epfAccounts', nameKey: 'name', noun: 'EPF account', fields: [
+      F.text('name', 'Name', { req: 1, ph: 'e.g. Employer EPF' }), F.text('companyName', 'Company (optional)'), F.text('uan', 'UAN (optional)'), F.text('pfAccountNumber', 'PF account no. (optional)'), F.date('accountOpenDate', 'Account opened on', { req: 1 }) ],
+    entries: { key: 'contributions', label: 'Contributions', dateKey: 'contributionDate', amtLabel: 'Amount', addLabel: 'Add contribution', typeKey: 'tileType', types: [['EMPLOYEE_EMPLOYER', 'Employee + employer'], ['PENSION', 'Pension']], extra: { isTransfer: false } },
+    make: () => ({ name: '', companyName: '', uan: '', pfAccountNumber: '', accountOpenDate: Date.now(), monthlyEeContribution: null, monthlyPensionContribution: null, recurringDepositDate: null, contributions: [], isArchived: false }) },
+  bank: { arr: 'bankBalances', nameKey: 'bankName', noun: 'bank balance', fields: [
+      F.text('bankName', 'Bank name', { req: 1, ph: 'e.g. HDFC Savings' }), F.text('accountDetails', 'Account details (optional)', { ph: 'e.g. xx1234' }), F.num('currentBalance', 'Current balance', { req: 1, rs: 1, zero: 1 }) ],
+    make: () => ({ bankName: '', accountDetails: '', currentBalance: '', isArchived: false }) },
+};
+const wealthByName = (d, name) => activeBooks(d).find(b => b.name === name && b.bookType === 'WEALTH');
+const mutateWealth = fn => { const name = currentBook().name; return mutate(d => { const b = wealthByName(d, name); if (!b) throw new Error('This book was not found any more.'); fn(b); }); };
+const tsOf = v => { const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d, 12).getTime(); };
+
+function openWealth(key, it) {
+  const spec = WSPEC[key], book = currentBook(), isEdit = !!it, src = isEdit ? it.src : null;
+  const arr0 = book[spec.arr] || [], idx0 = isEdit ? arr0.indexOf(src) : -1, origName = isEdit ? src[spec.nameKey] : null;
+  const st = JSON.parse(JSON.stringify(isEdit ? src : spec.make()));
+  const ds = {}; spec.fields.forEach(f => { if (f.t === 'date') ds[f.k] = dstr(st[f.k]); if (f.t === 'num' && st[f.k] != null) st[f.k] = String(st[f.k]); });
+  const ent = spec.entries, ents = ent ? (st[ent.key] || []) : null; if (ent) st[ent.key] = ents;
+  const ne = { date: dstr(Date.now()), amt: '', type: ent && ent.types ? ent.types[0][0] : null };
+  sheetForm((isEdit ? 'Edit ' : 'Add ') + spec.noun, api => {
+    const fieldsBox = h('div', null), entBox = h('div', null);
+    const paint = () => {
+      fieldsBox.replaceChildren(...spec.fields.filter(f => !f.show || f.show(st)).map(f => {
+        let ctl;
+        if (f.t === 'chips') ctl = chipRow(f.opts, () => st[f.k], v => { st[f.k] = v; paint(); });
+        else if (f.t === 'date') ctl = h('input', { type: 'date', value: ds[f.k], 'aria-label': f.label, oninput: e => { ds[f.k] = e.target.value; } });
+        else ctl = h('input', { type: 'text', value: st[f.k] == null ? '' : String(st[f.k]), inputmode: f.t === 'num' ? 'decimal' : null, placeholder: f.ph || '', 'aria-label': f.label, autocomplete: 'off', oninput: e => { st[f.k] = e.target.value; } });
+        return h('div', null, h('div', { class: 'flbl' }, f.label), ctl);
+      }));
+      if (ent) {
+        const sorted = ents.map((e, i) => ({ e, i })).sort((a, b) => b.e[ent.dateKey] - a.e[ent.dateKey]);
+        const dIn = h('input', { type: 'date', value: ne.date, 'aria-label': 'Date', oninput: e => { ne.date = e.target.value; } });
+        const aIn = h('input', { type: 'text', inputmode: 'decimal', placeholder: 'Amount', value: ne.amt, 'aria-label': ent.amtLabel, autocomplete: 'off', oninput: e => { ne.amt = e.target.value; } });
+        const add = h('button', { type: 'button', class: 'btn', onclick: () => {
+          const v = Math.round(parseFloat(String(ne.amt).replace(/,/g, '')) * 100) / 100; if (!(v > 0) || !ne.date) return api.fail('Enter a date and an amount above zero for the entry.');
+          const row = { amount: v, [ent.dateKey]: tsOf(ne.date), ...(ent.typeKey ? { [ent.typeKey]: ne.type } : {}), ...(ent.extra || {}), ...(key === 'ppf' ? { note: '' } : {}) };
+          ents.push(row); ne.amt = ''; api.fail(''); paint(); } }, '+ ' + ent.addLabel);
+        entBox.replaceChildren(h('div', { class: 'flbl' }, ent.label + ' (' + ents.length + ')'),
+          ent.types ? chipRow(ent.types, () => ne.type, v => { ne.type = v; }) : null,
+          h('div', { class: 'two' }, dIn, aIn), h('div', { class: 'actions' }, add),
+          h('div', { class: 'erows' }, sorted.map(({ e, i }) => h('div', { class: 'erow' }, h('span', null, fmtDate(e[ent.dateKey]), ent.types ? ' · ' + ((ent.types.find(t => t[0] === e[ent.typeKey]) || [0, ''])[1]) : ''), h('b', null, money(e.amount)),
+            h('button', { class: 'x', type: 'button', 'aria-label': 'Remove entry', onclick: () => { ents.splice(i, 1); paint(); } }, '×')))));
+      }
+    };
+    paint();
+    const excl = h('button', { type: 'button', class: 'chip2' }, ''); const pe = () => { excl.className = 'chip2' + (st.excludeFromNetWorth ? ' on' : ''); excl.textContent = st.excludeFromNetWorth ? '✓ Not counted in Net Worth' : 'Count in Net Worth'; };
+    excl.onclick = () => { st.excludeFromNetWorth = !st.excludeFromNetWorth; pe(); }; pe();
+    const save = h('button', { type: 'button', class: 'btn primary big' }, isEdit ? 'Save changes' : 'Add');
+    save.onclick = () => {
+      const rec = {};
+      for (const f of spec.fields.filter(f => !f.show || f.show(st))) {
+        if (f.t === 'chips') { rec[f.k] = st[f.k]; continue; }
+        if (f.t === 'date') { if (!ds[f.k]) return api.fail('Choose “' + f.label + '”.'); rec[f.k] = tsOf(ds[f.k]); continue; }
+        const raw = String(st[f.k] == null ? '' : st[f.k]).trim().replace(/,/g, '');
+        if (f.t === 'text') { if (f.req && !raw) return api.fail('Enter ' + f.label.toLowerCase() + '.'); rec[f.k] = raw; continue; }
+        if (!raw) { if (f.req) return api.fail('Enter ' + f.label.toLowerCase() + '.'); rec[f.k] = f.def != null ? f.def : 0; continue; }
+        const v = parseFloat(raw); if (!isFinite(v)) return api.fail('“' + f.label + '” must be a number.');
+        if (f.min != null && v < f.min) return api.fail('“' + f.label + '” must be at least ' + f.min + '.'); if (!f.zero && !f.min && v < 0) return api.fail('“' + f.label + '” cannot be negative.');
+        rec[f.k] = f.int ? Math.round(v) : Math.round(v * 100) / 100;
+      }
+      if (rec.interestRate != null && rec.interestRate > 100) return api.fail('The interest rate looks too high.');
+      if (ent) rec[ent.key] = ents;
+      rec.excludeFromNetWorth = !!st.excludeFromNetWorth;
+      api.run(save, 'Saving…', () => mutateWealth(b => {
+        b[spec.arr] = b[spec.arr] || []; let tgt;
+        if (isEdit) { tgt = b[spec.arr][idx0]; if (!tgt || tgt[spec.nameKey] !== origName) tgt = b[spec.arr].find(x => x[spec.nameKey] === origName); if (!tgt) throw new Error('This item was changed or removed on another device.'); }
+        else { tgt = spec.make(); b[spec.arr].push(tgt); }
+        Object.assign(tgt, rec);
+      })).then(ok => ok && toast(isEdit ? 'Saved ✓' : 'Added ✓'));
+    };
+    const extra = [];
+    if (isEdit) { const del = h('button', { type: 'button', class: 'btn danger' }, 'Delete');
+      del.onclick = () => { if (!confirm('Delete “' + origName + '”? This removes it and its history from your Net Worth.')) return;
+        api.run(del, 'Deleting…', () => mutateWealth(b => { const a = b[spec.arr] || []; let i = a[idx0] && a[idx0][spec.nameKey] === origName ? idx0 : a.findIndex(x => x[spec.nameKey] === origName); if (i < 0) throw new Error('This item was already removed.'); a.splice(i, 1); })).then(ok => ok && toast('Deleted')); }; extra.push(del); }
+    return h('div', null, fieldsBox, entBox, h('div', { class: 'flbl' }, 'Net Worth'), h('div', { class: 'chips' }, excl), h('div', { class: 'actions' }, save, extra));
+  });
+}
+function openCash() {
+  const book = currentBook(), st = { amt: String(book.cashInHand || 0), ex: !!book.cashExcludedFromNetWorth };
+  sheetForm('Cash in hand', api => {
+    const amt = h('input', { type: 'text', inputmode: 'decimal', class: 'amt', value: st.amt, 'aria-label': 'Cash in hand', autocomplete: 'off', oninput: e => { st.amt = e.target.value; } });
+    const ex = h('button', { type: 'button', class: 'chip2' }, ''); const pe = () => { ex.className = 'chip2' + (st.ex ? ' on' : ''); ex.textContent = st.ex ? '✓ Not counted in Net Worth' : 'Count in Net Worth'; }; ex.onclick = () => { st.ex = !st.ex; pe(); }; pe();
+    const save = h('button', { type: 'button', class: 'btn primary big' }, 'Save');
+    save.onclick = () => { const v = parseFloat(String(st.amt).replace(/,/g, '')); if (!isFinite(v) || v < 0) return api.fail('Enter the cash you have as a number (0 or more).');
+      api.run(save, 'Saving…', () => mutateWealth(b => { b.cashInHand = Math.round(v * 100) / 100; if (st.ex) b.cashExcludedFromNetWorth = true; else delete b.cashExcludedFromNetWorth; })).then(ok => ok && toast('Cash updated ✓')); };
+    return h('div', null, h('div', { class: 'flbl' }, 'Amount of cash you have'), amt, h('div', { class: 'flbl' }, 'Net Worth'), h('div', { class: 'chips' }, ex), h('div', { class: 'actions' }, save));
+  });
 }
 function pageExpenseDashboard() {
   const c = computed(), book = currentBook();
@@ -722,14 +862,14 @@ function pageBudgets() {
     h('button', { class: 'mnav', 'aria-label': 'Next month', disabled: em >= 0, onclick: () => { em = Math.min(0, em + 1); route(); } }, '›'));
   const left = (book.categories || []).filter(x => !x.isArchived && !c.budgets.some(b => b.cat && b.cat.localId === x.localId));
   return h('div', null, bookHeader('Budgets', ml), mn,
-    ed && left.length ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => openBudget(null, null) }, '+ Set a budget') : null,
+    ed && (book.categories || []).some(x => !x.isArchived) ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: openBudgetTable }, c.budgets.length ? 'Edit all budgets' : '+ Set budgets') : null,
     c.budgets.length ? h('div', { class: 'list' }, c.budgets.map(b => { const p = b.cap > 0 ? b.spent / b.cap * 100 : 0;
       return h('div', { class: 'item' + (ed ? ' clk' : ''), role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed && b.cat ? () => openBudget(b.cat, b.cap) : null, onkeydown: e => { if (ed && b.cat && e.key === 'Enter') openBudget(b.cat, b.cap); } },
         h('div', { class: 'irow' }, h('div', { class: 'iname' }, b.cat ? b.cat.name : 'Category'), h('div', { class: 'ival ' + (p > 100 ? 'down' : '') }, Math.round(p) + '%')),
         h('div', { class: 'bar' + (p > 100 ? ' over' : ''), role: 'progressbar', 'aria-valuenow': Math.round(p), 'aria-valuemin': 0, 'aria-valuemax': 100 }, h('span', { style: { width: Math.min(100, p) + '%', background: p > 100 ? null : (b.cat ? catColors(c)[b.cat.localId] : null) } })),
         h('div', { class: 'iline' }, `${money(b.spent)} of ${money(b.cap)}` + (b.spent > b.cap ? ` · over by ${money(b.spent - b.cap)}` : ` · ${money(b.cap - b.spent)} left`))); }))
       : h('section', { class: 'card empty' }, h('p', null, 'No budgets set for ' + ml + '.'),
-          ed ? h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn', onclick: () => { toast('Copying…'); copyBudgets().then(() => { toast('Budgets copied from last month ✓'); route(); }).catch(e => toast(e.message, true)); } }, 'Copy last month’s budgets'), left.length ? h('button', { class: 'btn primary', onclick: () => openBudget(null, null) }, '+ Set a budget') : null) : null));
+          ed ? h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn', onclick: () => { toast('Copying…'); copyBudgets().then(() => { toast('Budgets copied from last month ✓'); route(); }).catch(e => toast(e.message, true)); } }, 'Copy last month’s budgets'), (book.categories || []).some(x => !x.isArchived) ? h('button', { class: 'btn primary', onclick: openBudgetTable }, '+ Set budgets') : null) : null));
 }
 
 function download(name, text) {
@@ -740,9 +880,10 @@ function pageSettings() {
   return h('div', null, bookHeader('Settings', 'Arthik web ' + APP_VERSION + (canEdit() ? ' · editing on' : ' · view only')),
     h('section', { class: 'card' }, h('h2', null, 'Your data file'),
       h('p', null, 'Dropbox › Apps › Arthik › arthik-data.json'), h('p', { class: 'small' }, 'Last saved ' + (S.modified ? new Date(S.modified).toLocaleString('en-IN') : 'unknown') + (S.offline ? ' (offline copy)' : '')),
+      h('p', { class: 'small' }, 'The protected backup is locked with your data password, so no new password is asked. The unprotected copy has no password at all.'),
       h('p', { class: 'small' }, `${wealthBooks(S.data).length} Wealth book(s) and ${ex.length} Expense book(s) in this file. Use the book picker at the top to switch.`),
       h('div', { class: 'row' },
-        S.enc ? h('button', { class: 'btn', onclick: () => download('arthik-backup-' + new Date().toISOString().slice(0, 10) + '.json', S.enc) }, 'Download backup (protected)') : null,
+        S.enc ? h('button', { class: 'btn', onclick: () => { if (confirm('This backup file is locked with your data password (the one you use to unlock Arthik). Nobody can open it without that password.\n\nDownload it now?')) download('arthik-backup-' + new Date().toISOString().slice(0, 10) + '.json', S.enc); } }, 'Download backup (locked with your password)') : null,
         h('button', { class: 'btn', onclick: () => { if (confirm('This saves your data WITHOUT a password. Keep the file somewhere safe.')) download('arthik-backup-unprotected.json', JSON.stringify(S.data, null, 2)); } }, 'Download unprotected copy'))),
     (currentBook() && currentBook().bookType === 'EXPENSE') ? h('section', { class: 'card' }, h('h2', null, 'Manage this book'), h('p', { class: 'small' }, canEdit() ? 'Add, rename, recolour or archive.' : 'Sign in to Dropbox to make changes.'), h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/accounts' }, 'Accounts'), h('a', { class: 'btn', href: '#/categories' }, 'Categories'), h('a', { class: 'btn', href: '#/budgets' }, 'Budgets'))) : null,
     !S.enc ? null : h('section', { class: 'card' }, h('h2', null, 'Replace data'), h('p', { class: 'small' }, 'Load a newer Android backup over this file.'), h('button', { class: 'btn', onclick: () => screenSetup(true) }, 'Replace from a backup file')),
