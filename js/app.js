@@ -1,10 +1,10 @@
 import { APP_VERSION, AUTO_LOCK_MS } from './config.js';
 import * as dbx from './dropbox.js';
 import { encrypt, decrypt, isEncrypted } from './crypto.js';
-import { CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, setMask, money, pct, fmtDate } from './model.js';
+import { utcMonth, CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, setMask, money, pct, fmtDate } from './model.js';
 
 const root = document.getElementById('app');
-const S = { enc: null, rev: null, modified: null, data: null, bookIdx: 0, offline: false, error: '', busy: false };
+const S = { pw: null, enc: null, rev: null, modified: null, data: null, bookIdx: 0, offline: false, error: '', busy: false };
 
 // ---------- tiny DOM helper (text is always set as text, never as HTML) ----------
 function h(tag, attrs, ...kids) {
@@ -37,7 +37,7 @@ let lockTimer = null, lastActive = Date.now();
 function touch() { lastActive = Date.now(); clearTimeout(lockTimer); if (S.data) lockTimer = setTimeout(lock, AUTO_LOCK_MS); }
 ['click', 'keydown', 'touchstart', 'scroll', 'mousemove'].forEach(e => addEventListener(e, touch, { passive: true }));
 document.addEventListener('visibilitychange', () => { if (!document.hidden && S.data && Date.now() - lastActive > AUTO_LOCK_MS) lock(); });
-function lock() { S.data = null; view.cache = null; clearTimeout(lockTimer); if (S.enc) screenUnlock('Locked.'); else screenWelcome(); }
+function lock() { S.data = null; S.pw = null; closeModal(); view.cache = null; clearTimeout(lockTimer); if (S.enc) screenUnlock('Locked.'); else screenWelcome(); }
 
 // ---------- screens: welcome / sign-in ----------
 function shell(...content) {
@@ -89,7 +89,7 @@ function screenUnlock(note) {
     const r = await decrypt(S.enc, pw.value);
     if (!r.ok) { S.error = r.reason === 'wrong' ? 'That password is not correct.' : 'This file could not be read.'; return screenUnlock(); }
     try { S.data = JSON.parse(r.text); } catch { S.error = 'This file could not be read.'; return screenUnlock(); }
-    S.error = ''; S.bookIdx = 0; touch(); route();
+    S.error = ''; S.pw = pw.value; S.bookIdx = 0; touch(); route();
   };
   const btn = h('button', { class: 'btn primary big', onclick: go }, 'Unlock');
   pw.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
@@ -193,6 +193,8 @@ function route() {
   if (!book) body = emptyState();
   else if (isExp && page === 'transactions') body = pageEntries();
   else if (isExp && page === 'budgets') body = pageBudgets();
+  else if (isExp && page === 'accounts') body = pageAccounts();
+  else if (isExp && page === 'categories') body = pageCategories();
   else if (isExp && page !== 'settings') body = pageExpenseDashboard();
   else if (page === 'cat') body = pageCategory(arg);
   else if (page === 'liabilities') body = pageLiabilities();
@@ -200,20 +202,22 @@ function route() {
   else if (page === 'rent') body = pageRent();
   else if (page === 'settings') body = pageSettings();
   else body = pageDashboard();
-  const active = ['cat'].includes(page) ? 'dashboard' : (NAV.find(n => n.id === page) ? page : 'dashboard');
+  const active = ['cat'].includes(page) ? 'dashboard' : ['accounts', 'categories'].includes(page) ? 'settings' : (NAV.find(n => n.id === page) ? page : 'dashboard');
   const nav = h('nav', { class: 'nav', 'aria-label': 'Main' }, NAV.map(n => h('a', { href: '#/' + n.id, class: n.id === active ? 'on' : '', 'aria-current': n.id === active ? 'page' : null }, h('span', { class: 'dot' }), n.label)));
   const brandRow = () => h('div', { class: 'brand sm' }, h('img', { class: 'logo', src: 'icons/logo.png', alt: '', width: 40, height: 40 }), h('div', { class: 'brandname' }, 'Arthik'));
   const side = h('aside', { class: 'side' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker()), nav.cloneNode(true));
-  mount(h('div', { class: 'layout' }, side, h('main', { class: 'main' }, h('div', { class: 'mbar' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker())), body, h('div', { class: 'foot' }, 'Arthik web ' + APP_VERSION + ' · view only' + (matchMedia('(hover:hover)').matches ? ' · shortcuts: / search, H hide values' : ''))), nav));
+  mount(h('div', { class: 'layout' }, side, h('main', { class: 'main' }, h('div', { class: 'mbar' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker())), body, (isExp && canEdit() ? h('button', { class: 'fab', 'aria-label': 'Add an entry', onclick: () => openEntry(null) }, '+') : null), h('div', { class: 'foot' }, 'Arthik web ' + APP_VERSION + (canEdit() ? ' · editing on' : ' · view only') + (matchMedia('(hover:hover)').matches ? ' · shortcuts: N new entry, / search, H hide values' : ''))), nav));
   window.scrollTo(0, 0);
 }
 addEventListener('hashchange', () => { if (S.data) route(); });
 // Laptop shortcuts: "/" search entries, "h" hide or show values, "g" then nothing else is needed.
 addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
   if (!S.data || e.ctrlKey || e.metaKey || e.altKey) return;
   const tag = (e.target && e.target.tagName || '').toLowerCase(); if (['input', 'select', 'textarea'].includes(tag)) return;
   const b = currentBook(); if (!b) return;
   if (e.key === '/' && b.bookType === 'EXPENSE') { e.preventDefault(); if (!location.hash.includes('transactions')) location.hash = '#/transactions'; setTimeout(() => { const i = document.querySelector('input[type=search]'); if (i) i.focus(); }, 50); }
+  else if ((e.key === 'n' || e.key === 'N') && b.bookType === 'EXPENSE' && canEdit()) { e.preventDefault(); openEntry(null); }
   else if ((e.key === 'h' || e.key === 'H') && b.bookType === 'WEALTH') { setHidden(!hidden()); view.cache = null; route(); }
 });
 
@@ -353,7 +357,8 @@ function txRow(t, c) {
   const mode = t.type !== 'TRANSFER' && a ? ` (${a.name})` : '';
   const title = t.type === 'TRANSFER' ? `${a ? a.name : '?'} → ${to ? to.name : '?'}${t.note ? ' · ' + t.note : ''}` : (cat ? cat.name : 'Uncategorised') + (t.note ? ' · ' + t.note : '') + mode;
   const dot = t.type === 'TRANSFER' ? 'var(--pri)' : (cat ? catColors(c)[cat.localId] : 'var(--line2)');
-  return h('div', { class: 'tx' },
+  const ed = canEdit() && !t.__ro;
+  return h('div', { class: 'tx' + (ed ? ' clk' : ''), role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openEntry(t) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openEntry(t); } : null },
     h('span', { class: 'dotc', style: { background: dot } }),
     h('div', { class: 'txm' }, h('div', { class: 'txt' }, title, h('span', { class: 'ttag ' + ty.cls }, ty.label)), h('div', { class: 'isub' }, dayLabel(t.occurredAt))),
     h('div', { class: 'txa ' + ty.cls }, ty.sign + money(t.amount)));
@@ -365,7 +370,7 @@ const accType = a => { const ty = sentence(a.type); return ty && ty.replace(/\s/
 
 // ---------- small helpers: backup age, install hint, due pills ----------
 function backupBanner() {
-  const t = S.data && S.data.exportedAt; if (!t) return null;
+  const t = S.data && S.data.exportedAt; if (!t || canEdit()) return null;   // when editing is on, the web file is the live copy
   const days = Math.floor((Date.now() - t) / 86400000);
   const old = days >= 14;
   return h('div', { class: 'fresh' + (old ? ' old' : '') }, old ? '⚠ ' : '', `Data from your backup of ${fmtDate(t)}` + (days <= 0 ? ' (today)' : ` (${days} day${days === 1 ? '' : 's'} old)`) + (old ? '. Take a fresh backup on your Android phone and use Settings › Replace from a backup file.' : ''));
@@ -389,6 +394,265 @@ function duePill(a, c) {
   return h('div', { class: 'pill ' + (days < 0 ? 'bad' : days <= 3 ? 'warn' : 'ok') }, txt, ' · ', money(r.amount));
 }
 const monthLabel = (off) => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth() + off, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }); };
+
+// ---------- editing: safe saving ----------
+const canEdit = () => !!(S.data && S.enc && S.pw && !S.offline && dbx.isSignedIn());
+let saving = false;
+// Applies fn to the data and saves it. If the file in Dropbox changed on another device meanwhile,
+// it re-reads the newest file, applies the same change again on top of it, and retries - nothing is overwritten.
+async function mutate(fn) {
+  if (saving) throw new Error('Another save is still running. Try again in a moment.');
+  saving = true;
+  let base = JSON.stringify(S.data);   // the last copy we know is saved; used to undo if saving fails
+  try {
+    for (let i = 0; i < 4; i++) {
+      fn(S.data);
+      const text = await encrypt(JSON.stringify(S.data), S.pw);
+      try {
+        const r = await dbx.upload(text, S.rev);
+        S.enc = text; S.rev = r.rev; S.modified = r.modified; cacheSave(); view.cache = null; return;
+      } catch (e) {
+        if (e.message !== 'CONFLICT') throw e;
+        const f = await dbx.download(); if (!f) throw new Error('The file was removed from Dropbox. Nothing was saved.');
+        const d = await decrypt(f.text, S.pw);
+        if (!d.ok) throw new Error('The file in Dropbox now has a different password. Nothing was saved.');
+        S.data = JSON.parse(d.text); S.enc = f.text; S.rev = f.rev; S.modified = f.modified; base = d.text; view.cache = null;
+      }
+    }
+    throw new Error('The file keeps changing on another device. Try again.');
+  } catch (e) { S.data = JSON.parse(base); view.cache = null; throw e; }
+  finally { saving = false; }
+}
+const findBook = (d, name) => activeBooks(d).find(b => b.name === name && b.bookType === 'EXPENSE');
+
+let toastT = null;
+function toast(msg, bad) {
+  document.querySelectorAll('.toast').forEach(x => x.remove());
+  const t = h('div', { class: 'toast' + (bad ? ' bad' : ''), role: 'status' }, msg); document.body.append(t);
+  clearTimeout(toastT); toastT = setTimeout(() => t.remove(), bad ? 6000 : 2500);
+}
+function closeModal() { document.querySelectorAll('.overlay').forEach(x => x.remove()); }
+const dstr = ts => { const d = new Date(ts); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+
+function openEntry(t) {
+  closeModal();
+  const book = currentBook(), bname = book.name, c = computed();
+  const isEdit = !!t;
+  const accs = (book.accounts || []).filter(a => !a.isArchived || (t && (t.accountLocalId === a.localId || t.toAccountLocalId === a.localId)));
+  const cats = (book.categories || []).filter(x => !x.isArchived || (t && t.categoryLocalId === x.localId));
+  let lastAcc = null; try { lastAcc = +localStorage.getItem('arthik.lastacc.' + bname) || null; } catch {}
+  const st = {
+    type: t ? t.type : 'EXPENSE', cat: t ? t.categoryLocalId : null,
+    acc: t ? t.accountLocalId : ((accs.find(a => a.localId === lastAcc) || accs.find(a => a.isDefault) || accs[0] || {}).localId),
+    to: t ? t.toAccountLocalId : null,
+  };
+  const amount = h('input', { type: 'text', inputmode: 'decimal', class: 'amt', placeholder: '0', value: t ? String(t.amount) : '', 'aria-label': 'Amount', autocomplete: 'off' });
+  const date = h('input', { type: 'date', value: dstr(t ? t.occurredAt : Date.now()), max: dstr(Date.now() + 86400000 * 366), 'aria-label': 'Date' });
+  const note = h('input', { type: 'text', value: (t && t.note) || '', placeholder: 'Comment (optional)', maxlength: 120, 'aria-label': 'Comment' });
+  const msg = h('div', { class: 'err', hidden: true });
+  const typeBox = h('div', { class: 'seg', role: 'tablist' }), catBox = h('div', null), accBox = h('div', null), toBox = h('div', null);
+  const chips = (list, key, box, label, extra) => { box.replaceChildren(h('div', { class: 'flbl' }, label), h('div', { class: 'chips' }, list.map(x => {
+    const id = x.localId, on = st[key] === id, col = extra ? extra(x) : null;
+    return h('button', { type: 'button', class: 'chip2' + (on ? ' on' : ''), style: on && col ? { background: col, borderColor: col } : null, onclick: () => { st[key] = id; paint(); } },
+      col ? h('span', { class: 'sw', style: { background: on ? '#fff' : col } }) : null, key === 'cat' ? x.name : niceName(x.name)); }))); };
+  function paint() {
+    typeBox.replaceChildren(...[['EXPENSE', 'Expense'], ['INCOME', 'Income'], ['TRANSFER', 'Transfer']].map(([k, l]) =>
+      h('button', { type: 'button', class: 'segb ' + TYPE[k].cls + (st.type === k ? ' on' : ''), onclick: () => { st.type = k; paint(); } }, l)));
+    const tr = st.type === 'TRANSFER';
+    catBox.hidden = tr; if (!tr) chips(cats, 'cat', catBox, 'Category', x => catColors(c)[x.localId]);
+    chips(accs, 'acc', accBox, tr ? 'From account' : 'Account (cash, bank, card…)');
+    toBox.hidden = !tr; if (tr) chips(accs.filter(a => a.localId !== st.acc), 'to', toBox, 'To account');
+  }
+  const save = h('button', { type: 'button', class: 'btn primary big' }, isEdit ? 'Save changes' : 'Save entry');
+  const fail = m => { msg.textContent = m; msg.hidden = false; };
+  save.onclick = async () => {
+    msg.hidden = true;
+    const amt = Math.round(parseFloat(String(amount.value).replace(/,/g, '')) * 100) / 100;
+    if (!(amt > 0)) return fail('Enter an amount greater than zero.');
+    if (st.acc == null) return fail('Choose an account.');
+    const tr = st.type === 'TRANSFER';
+    if (tr && (st.to == null || st.to === st.acc)) return fail('Choose a different account to transfer to.');
+    if (!tr && st.cat == null) return fail('Choose a category.');
+    if (!date.value) return fail('Choose a date.');
+    const [y, m, dd] = date.value.split('-').map(Number), now = new Date();
+    const same = isEdit && dstr(t.occurredAt) === date.value;
+    const when = same ? t.occurredAt : (dstr(now) === date.value ? now.getTime() : new Date(y, m - 1, dd, 12).getTime());
+    const rec = { type: st.type, amount: amt, accountLocalId: st.acc, toAccountLocalId: tr ? st.to : null, categoryLocalId: tr ? null : st.cat, note: note.value.trim() || null, occurredAt: when };
+    save.disabled = true; save.textContent = 'Saving…';
+    try {
+      await mutate(d => {
+        const b = findBook(d, bname); if (!b) throw new Error('This book was not found any more.');
+        b.transactions = b.transactions || [];
+        if (isEdit) { const i = b.transactions.findIndex(x => x.localId === t.localId); if (i < 0) throw new Error('This entry was deleted on another device. Nothing was changed.'); b.transactions[i] = { ...b.transactions[i], ...rec }; }
+        else b.transactions.push({ localId: b.transactions.reduce((mx, x) => Math.max(mx, x.localId || 0), 0) + 1, ...rec });
+      });
+      try { localStorage.setItem('arthik.lastacc.' + bname, String(st.acc)); } catch {}
+      closeModal(); toast(isEdit ? 'Changes saved ✓' : 'Entry saved ✓'); route();
+    } catch (e) { fail(e.message + ' Your entry was NOT saved. You can try again.'); save.disabled = false; save.textContent = isEdit ? 'Save changes' : 'Save entry'; }
+  };
+  const del = isEdit ? h('button', { type: 'button', class: 'btn danger', onclick: async () => {
+    if (!confirm('Delete this entry? This cannot be undone.')) return;
+    del.disabled = true;
+    try { await mutate(d => { const b = findBook(d, bname); if (!b) return; b.transactions = (b.transactions || []).filter(x => x.localId !== t.localId); }); closeModal(); toast('Entry deleted'); route(); }
+    catch (e) { fail(e.message + ' Nothing was deleted.'); del.disabled = false; }
+  } }, 'Delete') : null;
+  const sheet = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': isEdit ? 'Edit entry' : 'Add entry' },
+    h('div', { class: 'sheethead' }, h('h2', null, isEdit ? 'Edit entry' : 'Add entry'), h('button', { class: 'x', 'aria-label': 'Close', onclick: closeModal }, '×')),
+    typeBox, h('div', { class: 'flbl' }, 'Amount'), amount, catBox, accBox, toBox,
+    h('div', { class: 'two' }, h('div', null, h('div', { class: 'flbl' }, 'Date'), date), h('div', null, h('div', { class: 'flbl' }, 'Comment'), note)),
+    msg, h('div', { class: 'actions' }, save, del));
+  const ov = h('div', { class: 'overlay', onclick: e => { if (e.target === ov) closeModal(); } }, sheet);
+  ov.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); if (e.key === 'Enter' && e.target.tagName === 'INPUT') save.click(); });
+  document.body.append(ov); paint(); setTimeout(() => amount.focus(), 50);
+}
+
+// ---------- editing: accounts, categories, budgets ----------
+const ACC_TYPES = [['BANK', 'Bank'], ['CASH', 'Cash'], ['CREDIT_CARD', 'Credit card'], ['PLUXEE', 'Pluxee']];
+const nextId = list => (list || []).reduce((m, x) => Math.max(m, x.localId || 0), 0) + 1;
+// Runs fn(book) on the current Expense book (found again by name after any reload) and saves safely.
+const mutateBook = fn => { const name = currentBook().name; return mutate(d => { const b = findBook(d, name); if (!b) throw new Error('This book was not found any more.'); fn(b); }); };
+// A simple bottom-sheet form. build(api) returns the body nodes; api.fail(msg), api.busy(btn, label, promiseFn)
+function sheetForm(title, build) {
+  closeModal();
+  const msg = h('div', { class: 'err', hidden: true });
+  const api = { fail: m => { msg.textContent = m; msg.hidden = false; }, close: closeModal,
+    run: async (btn, label, fn) => { const old = btn.textContent; msg.hidden = true; btn.disabled = true; btn.textContent = label;
+      try { await fn(); closeModal(); route(); return true; } catch (e) { api.fail(e.message + ' Nothing was changed.'); btn.disabled = false; btn.textContent = old; return false; } } };
+  const body = build(api);
+  const sheet = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+    h('div', { class: 'sheethead' }, h('h2', null, title), h('button', { class: 'x', 'aria-label': 'Close', onclick: closeModal }, '×')), body, msg);
+  const ov = h('div', { class: 'overlay', onclick: e => { if (e.target === ov) closeModal(); } }, sheet);
+  ov.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); if (e.key === 'Enter' && e.target.tagName === 'INPUT') { const sv = ov.querySelector('.btn.primary'); if (sv) sv.click(); } });
+  document.body.append(ov); setTimeout(() => { const i = ov.querySelector('input[type=text]'); if (i) i.focus(); }, 50);
+}
+const chipRow = (opts, get, set, colorOf) => { const box = h('div', { class: 'chips' });
+  const paint = () => box.replaceChildren(...opts.map(([v, l]) => { const on = get() === v; const col = colorOf ? colorOf(v) : null;
+    return h('button', { type: 'button', class: 'chip2' + (on ? ' on' : ''), style: on && col ? { background: col, borderColor: col } : null, onclick: () => { set(v); paint(); } }, col ? h('span', { class: 'sw', style: { background: on ? '#fff' : col } }) : null, l); }));
+  paint(); return box; };
+
+function openAccount(a) {
+  const book = currentBook(), isEdit = !!a;
+  const used = isEdit && ((book.transactions || []).some(t => t.accountLocalId === a.localId || t.toAccountLocalId === a.localId) || (book.recurringRules || []).some(r => r.accountLocalId === a.localId || r.toAccountLocalId === a.localId));
+  sheetForm(isEdit ? 'Edit account' : 'Add account', api => {
+    const st = { type: a ? a.type : 'BANK', def: a ? !!a.isDefault : !(book.accounts || []).some(x => !x.isArchived) };
+    const name = h('input', { type: 'text', value: a ? a.name : '', placeholder: 'e.g. HDFC Savings, Wallet', maxlength: 40, 'aria-label': 'Account name' });
+    const defBtn = h('button', { type: 'button', class: 'chip2' }, '');
+    const paintDef = () => { defBtn.className = 'chip2' + (st.def ? ' on' : ''); defBtn.textContent = st.def ? '★ Default account' : '☆ Make this the default account'; };
+    defBtn.onclick = () => { st.def = !st.def; paintDef(); }; paintDef();
+    const save = h('button', { type: 'button', class: 'btn primary big' }, isEdit ? 'Save changes' : 'Add account');
+    save.onclick = () => {
+      const nm = name.value.trim(); if (!nm) return api.fail('Enter a name for the account.');
+      if ((book.accounts || []).some(x => x.localId !== (a && a.localId) && !x.isArchived && x.name.trim().toLowerCase() === nm.toLowerCase())) return api.fail('You already have an account with this name.');
+      api.run(save, 'Saving…', () => mutateBook(b => {
+        b.accounts = b.accounts || [];
+        let acc; if (isEdit) { acc = b.accounts.find(x => x.localId === a.localId); if (!acc) throw new Error('This account was removed on another device.'); }
+        else { acc = { localId: nextId(b.accounts), isDefault: false, createdAt: Date.now(), isArchived: false }; b.accounts.push(acc); }
+        acc.name = nm; acc.type = st.type;
+        if (st.def) { b.accounts.forEach(x => x.isDefault = false); acc.isDefault = true; } else acc.isDefault = false;
+        if (!b.accounts.some(x => x.isDefault && !x.isArchived)) { const f = b.accounts.find(x => !x.isArchived); if (f) f.isDefault = true; }
+      })).then(ok => ok && toast(isEdit ? 'Account saved ✓' : 'Account added ✓'));
+    };
+    const extra = [];
+    if (isEdit) {
+      const arch = h('button', { type: 'button', class: 'btn' }, a.isArchived ? 'Restore' : 'Archive');
+      arch.onclick = () => {
+        if (!a.isArchived && (book.accounts || []).filter(x => !x.isArchived).length < 2) return api.fail('You need at least one active account.');
+        api.run(arch, 'Please wait…', () => mutateBook(b => { const acc = b.accounts.find(x => x.localId === a.localId); if (!acc) return; acc.isArchived = !acc.isArchived; if (acc.isArchived) acc.isDefault = false;
+          if (!b.accounts.some(x => x.isDefault && !x.isArchived)) { const f = b.accounts.find(x => !x.isArchived); if (f) f.isDefault = true; } })).then(ok => ok && toast(a.isArchived ? 'Account restored' : 'Account archived'));
+      }; extra.push(arch);
+      if (!used) { const del = h('button', { type: 'button', class: 'btn danger' }, 'Delete');
+        del.onclick = () => { if (!confirm('Delete this account? It has no entries, so nothing else changes.')) return;
+          api.run(del, 'Deleting…', () => mutateBook(b => { b.accounts = b.accounts.filter(x => x.localId !== a.localId); if (!b.accounts.some(x => x.isDefault && !x.isArchived)) { const f = b.accounts.find(x => !x.isArchived); if (f) f.isDefault = true; } })).then(ok => ok && toast('Account deleted')); }; extra.push(del); }
+    }
+    return h('div', null, h('div', { class: 'flbl' }, 'Name'), name, h('div', { class: 'flbl' }, 'Type'), chipRow(ACC_TYPES, () => st.type, v => { st.type = v; }), h('div', { class: 'flbl' }, 'Default'), h('div', { class: 'chips' }, defBtn),
+      isEdit && used ? h('p', { class: 'small' }, 'This account has entries, so it can be archived but not deleted. Archived accounts stay in your history.') : null,
+      h('div', { class: 'actions' }, save, extra));
+  });
+}
+function openCategory(x) {
+  const book = currentBook(), isEdit = !!x, c = computed();
+  const used = isEdit && ((book.transactions || []).some(t => t.categoryLocalId === x.localId) || (book.budgets || []).some(t => t.categoryLocalId === x.localId) || (book.recurringRules || []).some(t => t.categoryLocalId === x.localId));
+  sheetForm(isEdit ? 'Edit category' : 'Add category', api => {
+    const cur = isEdit ? (catColors(c)[x.localId] || PALETTE[0]) : PALETTE[(book.categories || []).length % PALETTE.length];
+    const st = { color: cur };
+    const name = h('input', { type: 'text', value: x ? x.name : '', placeholder: 'e.g. Groceries, Travel', maxlength: 30, 'aria-label': 'Category name' });
+    const sw = h('div', { class: 'swatches' });
+    const paintSw = () => sw.replaceChildren(...PALETTE.map(col => h('button', { type: 'button', class: 'swatch' + (st.color === col ? ' on' : ''), style: { background: col }, 'aria-label': 'Colour ' + col, onclick: () => { st.color = col; paintSw(); } })));
+    paintSw();
+    const save = h('button', { type: 'button', class: 'btn primary big' }, isEdit ? 'Save changes' : 'Add category');
+    save.onclick = () => {
+      const nm = name.value.trim(); if (!nm) return api.fail('Enter a name for the category.');
+      if ((book.categories || []).some(y => y.localId !== (x && x.localId) && !y.isArchived && y.name.trim().toLowerCase() === nm.toLowerCase())) return api.fail('You already have a category with this name.');
+      api.run(save, 'Saving…', () => mutateBook(b => {
+        b.categories = b.categories || []; let cat;
+        if (isEdit) { cat = b.categories.find(y => y.localId === x.localId); if (!cat) throw new Error('This category was removed on another device.'); }
+        else { cat = { localId: nextId(b.categories), icon: 'category', isArchived: false }; b.categories.push(cat); }
+        cat.name = nm; cat.colorHex = st.color;
+      })).then(ok => ok && toast(isEdit ? 'Category saved ✓' : 'Category added ✓'));
+    };
+    const extra = [];
+    if (isEdit) {
+      const arch = h('button', { type: 'button', class: 'btn' }, x.isArchived ? 'Restore' : 'Archive');
+      arch.onclick = () => api.run(arch, 'Please wait…', () => mutateBook(b => { const cat = b.categories.find(y => y.localId === x.localId); if (cat) cat.isArchived = !cat.isArchived; })).then(ok => ok && toast(x.isArchived ? 'Category restored' : 'Category archived'));
+      extra.push(arch);
+      if (!used) { const del = h('button', { type: 'button', class: 'btn danger' }, 'Delete');
+        del.onclick = () => { if (!confirm('Delete this category? It has no entries or budgets, so nothing else changes.')) return;
+          api.run(del, 'Deleting…', () => mutateBook(b => { b.categories = b.categories.filter(y => y.localId !== x.localId); })).then(ok => ok && toast('Category deleted')); }; extra.push(del); }
+    }
+    return h('div', null, h('div', { class: 'flbl' }, 'Name'), name, h('div', { class: 'flbl' }, 'Colour'), sw,
+      isEdit && used ? h('p', { class: 'small' }, 'This category is used by entries or budgets, so it can be archived but not deleted. Archiving hides it from new entries; old entries keep it.') : null,
+      h('div', { class: 'actions' }, save, extra));
+  });
+}
+function openBudget(cat, cap) {
+  const book = currentBook(), c = computed(), month = utcMonth(monthNow()), isEdit = cap != null;
+  const cats = (book.categories || []).filter(x => !x.isArchived);
+  const has = id => (book.budgets || []).some(b => b.month === month && b.categoryLocalId === id);
+  sheetForm(isEdit ? 'Edit budget' : 'Set a budget', api => {
+    const st = { cat: cat ? cat.localId : (cats.find(x => !has(x.localId)) || {}).localId };
+    const amt = h('input', { type: 'text', inputmode: 'decimal', class: 'amt', value: isEdit ? String(cap) : '', placeholder: '0', 'aria-label': 'Monthly limit', autocomplete: 'off' });
+    const save = h('button', { type: 'button', class: 'btn primary big' }, 'Save budget');
+    save.onclick = () => {
+      const v = Math.round(parseFloat(String(amt.value).replace(/,/g, '')) * 100) / 100;
+      if (st.cat == null) return api.fail('Choose a category.'); if (!(v > 0)) return api.fail('Enter a limit greater than zero.');
+      api.run(save, 'Saving…', () => mutateBook(b => { b.budgets = b.budgets || []; const ex = b.budgets.find(y => y.month === month && y.categoryLocalId === st.cat);
+        if (ex) ex.capAmount = v; else b.budgets.push({ categoryLocalId: st.cat, month, capAmount: v }); })).then(ok => ok && toast('Budget saved ✓'));
+    };
+    const extra = [];
+    if (isEdit) { const del = h('button', { type: 'button', class: 'btn danger' }, 'Remove budget');
+      del.onclick = () => api.run(del, 'Removing…', () => mutateBook(b => { b.budgets = (b.budgets || []).filter(y => !(y.month === month && y.categoryLocalId === cat.localId)); })).then(ok => ok && toast('Budget removed')); extra.push(del); }
+    return h('div', null, h('div', { class: 'flbl' }, 'Month'), h('p', { class: 'small', style: { margin: 0 } }, monthLabel(em)),
+      isEdit ? h('div', null, h('div', { class: 'flbl' }, 'Category'), h('p', { style: { margin: 0, fontWeight: 600 } }, cat.name)) :
+        h('div', null, h('div', { class: 'flbl' }, 'Category'), chipRow(cats.map(x => [x.localId, x.name + (has(x.localId) ? ' (has budget)' : '')]), () => st.cat, v => { st.cat = v; }, v => catColors(c)[v])),
+      h('div', { class: 'flbl' }, 'Monthly limit'), amt, h('div', { class: 'actions' }, save, extra));
+  });
+}
+function copyBudgets() {
+  const month = utcMonth(monthNow()), prev = utcMonth(new Date(new Date().getFullYear(), new Date().getMonth() + em - 1, 15, 12).getTime());
+  return mutateBook(b => { b.budgets = b.budgets || []; (b.budgets.filter(x => x.month === prev)).forEach(x => { if (!b.budgets.some(y => y.month === month && y.categoryLocalId === x.categoryLocalId)) b.budgets.push({ categoryLocalId: x.categoryLocalId, month, capAmount: x.capAmount }); }); });
+}
+
+function pageAccounts() {
+  const book = currentBook(), c = computed(), all = book.accounts || [], bal = Object.fromEntries(c.accounts.map(a => [a.localId, a.balance]));
+  const row = a => h('div', { class: 'item' + (canEdit() ? ' clk' : ''), role: canEdit() ? 'button' : null, tabindex: canEdit() ? 0 : null, onclick: canEdit() ? () => openAccount(a) : null, onkeydown: e => { if (canEdit() && e.key === 'Enter') openAccount(a); } },
+    h('div', { class: 'irow' }, h('div', { class: 'iname' }, niceName(a.name), a.isDefault && !a.isArchived ? h('span', { class: 'ttag blue' }, 'Default') : null), a.isArchived ? null : h('div', { class: 'ival' + (bal[a.localId] < 0 ? ' down' : '') }, money(bal[a.localId] || 0))),
+    h('div', { class: 'isub' }, sentence(a.type)));
+  const act = all.filter(a => !a.isArchived), arch = all.filter(a => a.isArchived);
+  return h('div', null, bookHeader('Accounts', book.name), h('a', { href: '#/settings', class: 'link' }, '‹ Settings'),
+    canEdit() ? h('button', { class: 'btn primary', style: { margin: '12px 0' }, onclick: () => openAccount(null) }, '+ Add account') : null,
+    act.length ? h('div', { class: 'list' }, act.map(row)) : h('section', { class: 'card empty' }, h('p', null, 'No accounts yet.')),
+    arch.length ? h('div', null, h('h2', null, 'Archived'), h('div', { class: 'list' }, arch.map(row))) : null);
+}
+function pageCategories() {
+  const book = currentBook(), c = computed(), all = book.categories || [];
+  const row = x => h('div', { class: 'item' + (canEdit() ? ' clk' : ''), role: canEdit() ? 'button' : null, tabindex: canEdit() ? 0 : null, onclick: canEdit() ? () => openCategory(x) : null, onkeydown: e => { if (canEdit() && e.key === 'Enter') openCategory(x); } },
+    h('div', { class: 'irow' }, h('div', { class: 'iname' }, h('span', { class: 'sw', style: { background: catColors(c)[x.localId] } }), x.name)));
+  const act = all.filter(a => !a.isArchived), arch = all.filter(a => a.isArchived);
+  return h('div', null, bookHeader('Categories', book.name), h('a', { href: '#/settings', class: 'link' }, '‹ Settings'),
+    canEdit() ? h('button', { class: 'btn primary', style: { margin: '12px 0' }, onclick: () => openCategory(null) }, '+ Add category') : null,
+    act.length ? h('div', { class: 'list' }, act.map(row)) : h('section', { class: 'card empty' }, h('p', null, 'No categories yet.')),
+    arch.length ? h('div', null, h('h2', null, 'Archived'), h('div', { class: 'list' }, arch.map(row))) : null);
+}
 function pageExpenseDashboard() {
   const c = computed(), book = currentBook();
   const oldest = c.txs.length ? c.txs[c.txs.length - 1].occurredAt : Date.now(), od = new Date(oldest), nd = new Date();
@@ -415,7 +679,7 @@ function pageExpenseDashboard() {
     cur && c.owed.length ? h('div', null, h('h2', null, 'Money owed to you'), h('div', { class: 'list' }, c.owed.map(r => h('div', { class: 'item' },
       h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.personName), h('div', { class: 'ival' }, money(r.amount))), r.note ? h('div', { class: 'isub' }, r.note) : null)))) : null,
     h('h2', null, 'Recent entries'),
-    h('section', { class: 'card' }, c.txs.slice(0, 10).map(t => txRow(t, c)), c.txs.length ? h('a', { href: '#/transactions', class: 'btn ghost' }, 'See all entries') : h('p', null, 'No entries yet. Entries you add in the Android app appear here after you take a new backup.')));
+    h('section', { class: 'card' }, c.txs.slice(0, 10).map(t => txRow(t, c)), c.txs.length ? h('a', { href: '#/transactions', class: 'btn ghost' }, 'See all entries') : h('p', null, canEdit() ? 'No entries yet. Tap the + button to add your first one.' : 'No entries yet.')));
 }
 
 const ef = { q: '', type: 'ALL', month: 'ALL', cat: 'ALL', acc: 'ALL', limit: 100 };
@@ -451,13 +715,21 @@ function pageEntries() {
 }
 
 function pageBudgets() {
-  const c = computed();
-  const mname = new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
-  return h('div', null, bookHeader('Budgets', mname),
+  const c = computed(), book = currentBook(), ml = monthLabel(em), ed = canEdit();
+  const mn = h('div', { class: 'monthbar' },
+    h('button', { class: 'mnav', 'aria-label': 'Previous month', onclick: () => { em -= 1; route(); } }, '‹'),
+    h('div', { class: 'mlabel' }, ml, em ? h('button', { class: 'link', onclick: () => { em = 0; route(); } }, 'Back to this month') : ''),
+    h('button', { class: 'mnav', 'aria-label': 'Next month', disabled: em >= 0, onclick: () => { em = Math.min(0, em + 1); route(); } }, '›'));
+  const left = (book.categories || []).filter(x => !x.isArchived && !c.budgets.some(b => b.cat && b.cat.localId === x.localId));
+  return h('div', null, bookHeader('Budgets', ml), mn,
+    ed && left.length ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => openBudget(null, null) }, '+ Set a budget') : null,
     c.budgets.length ? h('div', { class: 'list' }, c.budgets.map(b => { const p = b.cap > 0 ? b.spent / b.cap * 100 : 0;
-      return h('div', { class: 'item' }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, b.cat ? b.cat.name : 'Category'), h('div', { class: 'ival ' + (p > 100 ? 'down' : '') }, Math.round(p) + '%')),
+      return h('div', { class: 'item' + (ed ? ' clk' : ''), role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed && b.cat ? () => openBudget(b.cat, b.cap) : null, onkeydown: e => { if (ed && b.cat && e.key === 'Enter') openBudget(b.cat, b.cap); } },
+        h('div', { class: 'irow' }, h('div', { class: 'iname' }, b.cat ? b.cat.name : 'Category'), h('div', { class: 'ival ' + (p > 100 ? 'down' : '') }, Math.round(p) + '%')),
         h('div', { class: 'bar' + (p > 100 ? ' over' : ''), role: 'progressbar', 'aria-valuenow': Math.round(p), 'aria-valuemin': 0, 'aria-valuemax': 100 }, h('span', { style: { width: Math.min(100, p) + '%', background: p > 100 ? null : (b.cat ? catColors(c)[b.cat.localId] : null) } })),
-        h('div', { class: 'iline' }, `${money(b.spent)} of ${money(b.cap)}` + (b.spent > b.cap ? ` · over by ${money(b.spent - b.cap)}` : ` · ${money(b.cap - b.spent)} left`))); })) : h('section', { class: 'card empty' }, h('p', null, 'No budgets set for this month. Set them in the Android app, then take a new backup.')));
+        h('div', { class: 'iline' }, `${money(b.spent)} of ${money(b.cap)}` + (b.spent > b.cap ? ` · over by ${money(b.spent - b.cap)}` : ` · ${money(b.cap - b.spent)} left`))); }))
+      : h('section', { class: 'card empty' }, h('p', null, 'No budgets set for ' + ml + '.'),
+          ed ? h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn', onclick: () => { toast('Copying…'); copyBudgets().then(() => { toast('Budgets copied from last month ✓'); route(); }).catch(e => toast(e.message, true)); } }, 'Copy last month’s budgets'), left.length ? h('button', { class: 'btn primary', onclick: () => openBudget(null, null) }, '+ Set a budget') : null) : null));
 }
 
 function download(name, text) {
@@ -465,13 +737,14 @@ function download(name, text) {
 }
 function pageSettings() {
   const ex = expenseBooks(S.data);
-  return h('div', null, bookHeader('Settings', 'Arthik web ' + APP_VERSION),
+  return h('div', null, bookHeader('Settings', 'Arthik web ' + APP_VERSION + (canEdit() ? ' · editing on' : ' · view only')),
     h('section', { class: 'card' }, h('h2', null, 'Your data file'),
       h('p', null, 'Dropbox › Apps › Arthik › arthik-data.json'), h('p', { class: 'small' }, 'Last saved ' + (S.modified ? new Date(S.modified).toLocaleString('en-IN') : 'unknown') + (S.offline ? ' (offline copy)' : '')),
       h('p', { class: 'small' }, `${wealthBooks(S.data).length} Wealth book(s) and ${ex.length} Expense book(s) in this file. Use the book picker at the top to switch.`),
       h('div', { class: 'row' },
         S.enc ? h('button', { class: 'btn', onclick: () => download('arthik-backup-' + new Date().toISOString().slice(0, 10) + '.json', S.enc) }, 'Download backup (protected)') : null,
         h('button', { class: 'btn', onclick: () => { if (confirm('This saves your data WITHOUT a password. Keep the file somewhere safe.')) download('arthik-backup-unprotected.json', JSON.stringify(S.data, null, 2)); } }, 'Download unprotected copy'))),
+    (currentBook() && currentBook().bookType === 'EXPENSE') ? h('section', { class: 'card' }, h('h2', null, 'Manage this book'), h('p', { class: 'small' }, canEdit() ? 'Add, rename, recolour or archive.' : 'Sign in to Dropbox to make changes.'), h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/accounts' }, 'Accounts'), h('a', { class: 'btn', href: '#/categories' }, 'Categories'), h('a', { class: 'btn', href: '#/budgets' }, 'Budgets'))) : null,
     !S.enc ? null : h('section', { class: 'card' }, h('h2', null, 'Replace data'), h('p', { class: 'small' }, 'Load a newer Android backup over this file.'), h('button', { class: 'btn', onclick: () => screenSetup(true) }, 'Replace from a backup file')),
     h('section', { class: 'card' }, h('h2', null, 'Appearance'), h('div', { class: 'row' },
       ['Light', 'Dark', 'Match device'].map(t => h('button', { class: 'btn', onclick: () => { setTheme(t === 'Match device' ? null : t.toLowerCase()); route(); } }, t)))),
