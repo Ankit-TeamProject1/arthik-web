@@ -115,6 +115,15 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
       lines: [`${x.unitsHeld} units · avg ${money(x.avgBuyPrice)}`, x.lastFetchedPrice == null ? 'No saved price — valued at your average cost' : `Price ${money(price)} as of ${fmtDate(x.lastFetchedAt)}`], excluded: x.excludeFromNetWorth });
   });
 
+  // v0.7.4: holdings from broker statements / the Investments tab (web only); MF go with mutual funds, the rest with shares
+  live(book.brokerHoldings).forEach(x => {
+    const units = +x.units || 0, price = +x.price > 0 ? +x.price : (+x.avgPrice || 0), value = units * price, cost = units * (+x.avgPrice || 0);
+    const gain = cost > 0 ? (value - cost) / cost * 100 : null;
+    add(x.kind === 'MF' ? 'mf' : 'demat', { src: x, hold: true, kind: x.kind || 'OTHER', broker: x.broker || '', name: x.name, sub: [x.broker, x.accountId, x.tag].filter(Boolean).join(' · '), value, cost,
+      lines: [`${+units.toFixed(4)} ${x.kind === 'MF' ? 'units' : 'qty'} · avg ${price2(x.avgPrice)} · invested ${money(cost)}${gain === null ? '' : ' · ' + pct(gain)}`,
+              +x.price > 0 ? `${x.kind === 'MF' ? 'NAV' : 'Price'} ${price2(price)}${x.priceDate ? ' as of ' + fmtDate(x.priceDate) : ''}` : 'No price saved — valued at your average cost'], excluded: x.excludeFromNetWorth });
+  });
+
   live(book.insurancePolicies).forEach(x => add('insurance', { src: x, name: x.policyName, sub: [x.insurerName, x.policyType].filter(Boolean).join(' · '),
     value: x.hasCashValue ? x.currentSurrenderValue : 0,
     lines: [`Sum assured: ${money(x.sumAssured)}`, x.hasCashValue ? `Surrender value: ${money(x.currentSurrenderValue)}` : 'No cash value',
@@ -161,7 +170,7 @@ function goalProgress(book, cats) {
       const cat = cats[GOAL_MAP[l.type]]; if (!cat) return;
       const item = cat.items.find(i => i.name === l.name);
       if (!item) return;
-      linked.push({ cat: cat.label, name: l.name, value: item.value });
+      linked.push({ cat: cat.label, name: l.name, value: item.value, excluded: !!item.excluded });
       if (!item.excluded) current += item.value;
     });
     return { src: g, name: g.name, target: g.targetAmount, targetDate: g.targetDate, current, linked, pct: g.targetAmount > 0 ? Math.min(100, current / g.targetAmount * 100) : 0 };
@@ -178,6 +187,8 @@ export function setCurrency(code) {
   try { SYM = INDIAN ? '₹' : new Intl.NumberFormat('en', { style: 'currency', currency: code }).formatToParts(0).find(p => p.type === 'currency').value; }
   catch { SYM = code + ' '; }
 }
+/** Price with paise, e.g. ₹303.03 (for per-unit prices and NAVs) */
+export function price2(n) { if (n == null || isNaN(n)) return '—'; const a = Math.abs(n), w = Math.floor(a), f = Math.round((a - w) * 100); const base = money(f === 100 ? w + 1 : w); return (n < 0 ? '-' : '') + base + (MASK ? '' : '.' + String(f === 100 ? 0 : f).padStart(2, '0')); }
 export function money(n) {
   if (n == null || isNaN(n)) return '—';
   if (MASK) return SYM + '••••••';

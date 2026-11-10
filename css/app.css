@@ -198,3 +198,29 @@ a.btn{display:inline-block;text-decoration:none;text-align:center}
 @media (max-width:480px){.layout>.nav a{font-size:11px;padding:6px 2px;letter-spacing:-.2px}}
 .reddot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#EF4444;margin-left:4px;vertical-align:middle}.morelink{text-decoration:none;color:inherit;display:block}
 .layout>.nav a{position:relative}.layout>.nav .reddot{position:absolute;top:6px;left:50%;margin-left:16px}
+
+/* v0.7.4 pending: soft-coloured, picture cards everywhere */
+.item.acc,.tile.acc{background:linear-gradient(160deg,color-mix(in srgb,var(--acc) 14%,var(--card)) 0%,color-mix(in srgb,var(--acc) 5%,var(--soft)) 100%);border-color:color-mix(in srgb,var(--acc) 28%,var(--line))}
+.tile.acc{border-left:6px solid var(--acc)}
+.item.acc .iill,.tile.acc .iill{background:color-mix(in srgb,var(--acc) 20%,#fff);border-radius:12px;padding:3px;box-shadow:0 2px 4px rgba(20,30,50,.18)}
+.tile.acc .iill{width:30px;height:30px;margin-right:6px}
+.item.acc .iname,.tile.acc .tname{display:flex;align-items:center}
+.item.morelink .iname{font-weight:600}
+
+/* v0.7.4 pending: dashboard top row, multi-select trash */
+.toprow{display:grid;grid-template-columns:1fr;gap:12px}
+@media (min-width:700px){.toprow{grid-template-columns:1fr 1fr;align-items:stretch}.toprow>.card{margin:0}}
+.selbar{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.item.pickable{cursor:pointer;position:relative;padding-left:46px}
+.pickbox{position:absolute;left:14px;top:16px;width:20px;height:20px;border-radius:6px;border:2px solid var(--mut2);background:var(--card)}
+.item.picked{outline:2px solid var(--pri)}
+.item.picked .pickbox{background:var(--pri);border-color:var(--pri)}
+.item.picked .pickbox::after{content:'✓';color:#fff;font-size:14px;position:absolute;left:3px;top:-1px}
+
+/* v0.7.4 pending: Investments tabs and upload preview */
+.tabrow{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 10px;margin:0 -2px;-webkit-overflow-scrolling:touch}
+.tabrow .chip2{flex:0 0 auto;white-space:nowrap}.tabrow .cnt{opacity:.7;font-size:12px}
+.plist{margin:4px 0 12px;padding-left:18px;font-size:13px}.plist li{margin:2px 0}
+.okbox{background:color-mix(in srgb,#22C55E 14%,var(--card));border:1px solid color-mix(in srgb,#22C55E 35%,var(--line));border-radius:12px;padding:10px 12px;margin:12px 0;font-size:14px}
+.warnbox{background:color-mix(in srgb,#F59E0B 16%,var(--card));border:1px solid color-mix(in srgb,#F59E0B 40%,var(--line));border-radius:12px;padding:10px 12px;margin:10px 0;font-size:13px}
+.pickbtn{width:100%;text-align:left}

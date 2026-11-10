@@ -73,14 +73,18 @@ export function eventItems(book, now = Date.now(), rateHistory = []) {
   L(book.recurringDeposits).forEach(x => { if (!x.autoRenewMode || x.autoRenewMode === 'DISABLED') return; const mat = rd.maturityDate(x); if (mat > now) return; const mv = rd.maturityValue(x);
     add({ type: 'RDMAT', arr: 'recurringDeposits', ref: x, id: x.name, name: x.name, amount: x.autoRenewMode === 'PRINCIPAL_PLUS_INTEREST' ? mv : x.monthlyInstallment, due: mat, next: mat, pend: 1, mv, tenure: x.tenureMonths, rate: x.interestRate }); });
   const rates = rateHistory.filter(r => r.instrument === 'PPF');
+  // PPF interest: oldest financial year (up to 5 back) with no interest credited yet is offered first, one at a time
   L(book.ppfAccounts).forEach(a => { const all = a.deposits || [], dep = all.filter(d => d.type !== 'INTEREST').map(d => [d.depositDate, d.amount]); if (!dep.length) return;
-    const fy = fyStartOf(now), prev = new Date(new Date(fy).getFullYear() - 1, 3, 1, 0, 0, 0, 0).getTime(), prevEnd = fy - 1;
-    if (all.some(e => e.type === 'INTEREST' && fyStartOf(e.depositDate) === fy)) return;
-    const during = dep.filter(d => d[0] >= prev && d[0] <= prevEnd).reduce((x, d) => x + d[1], 0);
-    const interest = Math.max(0, ppfEpfValue(dep, rates, prevEnd) - ppfEpfValue(dep, rates, prev) - during); if (!(interest > 0)) return;
-    const y = new Date(fy).getFullYear();
-    add({ type: 'PPF', arr: 'ppfAccounts', ref: a, id: a.name, name: a.name + ' · interest FY ' + (y - 1) + '-' + String(y).slice(2), amount: Math.round(interest * 100) / 100, due: fy, next: fy, pend: 1 }); });
-  L(book.liabilities).forEach(l => { if (!(l.emiAmount === 0 && l.tenureMonths === 0 && l.interestRate === 0) || !l.dueDate || !(l.outstandingBalance > 0) || l.dueDate > now + 3 * DAY) return;
+    const cur = fyStartOf(now), first = fyStartOf(Math.min(...dep.map(d => d[0])));
+    let fs = Math.max(first, new Date(new Date(cur).getFullYear() - 5, 3, 1, 0, 0, 0, 0).getTime());
+    for (; fs < cur; fs = new Date(new Date(fs).getFullYear() + 1, 3, 1, 0, 0, 0, 0).getTime()) {
+      const credit = new Date(new Date(fs).getFullYear() + 1, 3, 1, 0, 0, 0, 0).getTime(), fsEnd = credit - 1;
+      if (all.some(e => e.type === 'INTEREST' && fyStartOf(e.depositDate) === credit)) continue;
+      const during = dep.filter(d => d[0] >= fs && d[0] <= fsEnd).reduce((x, d) => x + d[1], 0);
+      const interest = Math.max(0, ppfEpfValue(dep, rates, fsEnd) - ppfEpfValue(dep, rates, fs) - during); if (!(interest > 0)) continue;
+      const y = new Date(credit).getFullYear();
+      add({ type: 'PPF', arr: 'ppfAccounts', ref: a, id: a.name, name: a.name + ' · interest FY ' + (y - 1) + '-' + String(y).slice(2), amount: Math.round(interest * 100) / 100, due: credit, next: credit, pend: 1 }); break; } });
+  L(book.liabilities).forEach(l => { if (!(l.emiAmount === 0 && l.tenureMonths === 0 && l.interestRate === 0) || !l.dueDate || !(l.outstandingBalance > 0 || l.repeatsMonthly) || l.dueDate > now + 3 * DAY) return;
     add({ type: 'LIAB', arr: 'liabilities', ref: l, id: l.name, name: l.name, amount: l.outstandingBalance, due: l.dueDate, next: l.dueDate, pend: 1 }); });
   L(book.insurancePolicies).forEach(p => { if (!p.nextDueDate || p.nextDueDate > now + 7 * DAY) return;
     add({ type: 'INS', arr: 'insurancePolicies', ref: p, id: p.policyName, name: p.policyName, amount: p.premiumAmount, due: p.nextDueDate, next: p.nextDueDate, pend: 1 }); });
@@ -113,7 +117,7 @@ export function confirmInBook(book, it, opts, now = Date.now(), data = null) {
     if (ln && data) { const eb = (data.books || []).find(b => b.bookType === 'EXPENSE' && !b.isArchived && b.name === ln.bookName), ac = eb && (eb.accounts || []).find(a => a.name === ln.accountName && !a.isArchived);
       if (ac) { eb.transactions = eb.transactions || []; eb.transactions.push({ localId: eb.transactions.reduce((m, x) => Math.max(m, x.localId || 0), 0) + 1, type: 'INCOME', amount: amt, accountLocalId: ac.localId, toAccountLocalId: null, categoryLocalId: null, note: 'Rent from ' + (rec.tenantName || rec.propertyName), occurredAt: rcv }); } } }
   else if (it.type === 'PPF') (rec.deposits = rec.deposits || []).push({ amount: amt, depositDate: due, type: 'INTEREST', note: 'Interest credited' });
-  else if (it.type === 'LIAB') { rec.outstandingBalance = 0; rec.dueDate = null; }
+  else if (it.type === 'LIAB') { rec.outstandingBalance = 0; rec.dueDate = rec.repeatsMonthly ? addM(due, 1) : null; }
   else if (it.type === 'INS') { const step = { MONTHLY: 1, QUARTERLY: 3, ANNUALLY: 12 }[rec.premiumFrequency] || 12; const d = new Date(due); const day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + step); d.setDate(Math.min(day, dim(d.getFullYear(), d.getMonth()))); rec.nextDueDate = d.getTime(); }
   else if (it.type === 'FDMAT' || it.type === 'RDMAT') {
     const months = Math.round(Number(opts.months)), rate = Number(opts.rate), start = opts.start || due; if (!(months > 0)) throw new Error('Enter the new tenure in months.'); if (!(rate >= 0 && rate <= 100)) throw new Error('Enter the interest rate.');
@@ -143,7 +147,7 @@ export function calendarEvents(book, now = Date.now(), rh = []) {
   (book.fixedDeposits || []).filter(x => !x.isArchived && fd.maturityDate(x) > now).forEach(x => out.push({ key: 'FDM' + x.name, verb: 'FD matures:', name: x.name, amount: fd.maturityValue(x), date: fd.maturityDate(x) }));
   (book.recurringDeposits || []).filter(x => !x.isArchived && rd.maturityDate(x) > now).forEach(x => out.push({ key: 'RDM' + x.name, verb: 'RD matures:', name: x.name, amount: rd.maturityValue(x), date: rd.maturityDate(x) }));
   (book.insurancePolicies || []).filter(p => !p.isArchived && p.nextDueDate && p.nextDueDate > now + 7 * DAY).forEach(p => out.push({ key: 'INSN' + p.policyName, verb: 'Premium due:', name: p.policyName, amount: p.premiumAmount, date: p.nextDueDate, rrule: 'FREQ=MONTHLY;INTERVAL=' + ({ MONTHLY: 1, QUARTERLY: 3, ANNUALLY: 12 }[p.premiumFrequency] || 12) + ';COUNT=' + ({ MONTHLY: 24, QUARTERLY: 8, ANNUALLY: 5 }[p.premiumFrequency] || 5) }));
-  (book.liabilities || []).filter(l => !l.isArchived && l.dueDate && l.dueDate > now + 3 * DAY && l.outstandingBalance > 0).forEach(l => out.push({ key: 'LIABN' + l.name, verb: 'Pay', name: l.name, amount: l.outstandingBalance, date: l.dueDate }));
+  (book.liabilities || []).filter(l => !l.isArchived && l.dueDate && l.dueDate > now + 3 * DAY && (l.outstandingBalance > 0 || l.repeatsMonthly)).forEach(l => out.push({ key: 'LIABN' + l.name, verb: 'Pay', name: l.name, amount: l.outstandingBalance, date: l.dueDate, rrule: l.repeatsMonthly ? 'FREQ=MONTHLY;COUNT=12' : undefined }));
   (book.loans || []).filter(l => !l.isArchived).forEach(l => { const un = (l.payments || []).filter(p => !p.isPaid && !p.isPrepayment).sort((a, b) => a.installmentNumber - b.installmentNumber); if (un.length) out.push({ key: 'LOAN' + l.name, verb: 'EMI:', name: l.name, amount: un[0].emiAmount, date: nxt(un[0].dueDate), rrule: 'FREQ=MONTHLY;COUNT=' + un.length }); });
   return out.sort((a, b) => a.date - b.date);
 }
