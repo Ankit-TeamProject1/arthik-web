@@ -160,14 +160,18 @@ function zipStore(files) {
 }
 const xe = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const colL = i => String.fromCharCode(65 + i);
+const SST = { list: [], map: new Map() };
+const sstIx = t => { let i = SST.map.get(t); if (i == null) { i = SST.list.length; SST.list.push(t); SST.map.set(t, i); } return i; };
 function sheetXml(rows, widths, valids) {
+  const dim = 'A1:' + colL(Math.max(0, ...rows.map(r => r.length - 1))) + rows.length;
   const body = rows.map((r, ri) => '<row r="' + (ri + 1) + '">' + r.map((v, ci) => { if (v == null || v === '') return ''; const ref = colL(ci) + (ri + 1), st = ri === 0 && widths ? ' s="1"' : '';
-    return typeof v === 'number' ? '<c r="' + ref + '"' + st + '><v>' + v + '</v></c>' : '<c r="' + ref + '" t="inlineStr"' + st + '><is><t xml:space="preserve">' + xe(v) + '</t></is></c>'; }).join('') + '</row>').join('');
+    return typeof v === 'number' ? '<c r="' + ref + '"' + st + '><v>' + v + '</v></c>' : '<c r="' + ref + '" t="s"' + st + '><v>' + sstIx(String(v)) + '</v></c>'; }).join('') + '</row>').join('');
   const cols = widths ? '<cols>' + widths.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>').join('') + '</cols>' : '<cols><col min="1" max="1" width="110" customWidth="1"/></cols>';
   const dv = valids && valids.length ? '<dataValidations count="' + valids.length + '">' + valids.map(([sq, list]) => '<dataValidation type="list" allowBlank="1" showErrorMessage="1" sqref="' + sq + '"><formula1>"' + list + '"</formula1></dataValidation>').join('') + '</dataValidations>' : '';
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0">' + (widths ? '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>' : '') + '</sheetView></sheetViews>' + cols + '<sheetData>' + body + '</sheetData>' + dv + '</worksheet>';
 }
 export function buildHoldingsXlsx(holdRows, withSamples) {
+  SST.list = []; SST.map = new Map();
   const sample = [
     ['Zerodha', 'AB1234', 'STOCK', 'IRFC', '', '', 'INE053F01010', '', '', 600, 24.8, 83.5, '2026-11-10', 'Financial services', 'sample row: delete me'],
     ['Zerodha', 'AB1234', 'MF', 'Parag Parikh Flexi Cap Fund - Direct Plan', 'Direct', 'Growth', 'INF879O01027', '122639', '1234567/89', 679.155, 91.2854, 93.9483, '2026-11-10', 'Equity - Flexi Cap', 'sample row: delete me'],
@@ -182,16 +186,19 @@ export function buildHoldingsXlsx(holdRows, withSamples) {
     ['Latest price / NAV: if blank, the holding is valued at your average buy price. Price as on: YYYY-MM-DD (today if blank).'],
     ['Delete the sample rows before uploading. A holding you leave out of a later upload is NOT deleted unless you tick the option in the preview.'],
     ['Your file is read inside your browser and is never sent anywhere.']];
-  const ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>';
+  const ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>';
   const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const sh1 = sheetXml(rows, [16, 16, 8, 44, 9, 9, 16, 12, 14, 12, 12, 14, 12, 22, 24], [['C2:C2000', 'MF,STOCK,SGB,ETF,BOND,OTHER'], ['E2:E2000', 'Direct,Regular'], ['F2:F2000', 'Growth,IDCW,Bonus']]), sh2 = sheetXml(help, null, null);
+  const sst = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="' + SST.list.length + '" uniqueCount="' + SST.list.length + '">' + SST.list.map(t => '<si><t xml:space="preserve">' + xe(t) + '</t></si>').join('') + '</sst>';
   return zipStore([
     ['[Content_Types].xml', ct],
     ['_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="' + R + '/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
     ['xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="' + R + '"><sheets><sheet name="Holdings" sheetId="1" r:id="rId1"/><sheet name="How to fill" sheetId="2" r:id="rId2"/></sheets></workbook>'],
-    ['xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="' + R + '/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="' + R + '/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="' + R + '/styles" Target="styles.xml"/></Relationships>'],
+    ['xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="' + R + '/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="' + R + '/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="' + R + '/styles" Target="styles.xml"/><Relationship Id="rId4" Type="' + R + '/sharedStrings" Target="sharedStrings.xml"/></Relationships>'],
     ['xl/styles.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2F3F5C"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'],
-    ['xl/worksheets/sheet1.xml', sheetXml(rows, [16, 16, 8, 44, 9, 9, 16, 12, 14, 12, 12, 14, 12, 22, 24], [['C2:C2000', 'MF,STOCK,SGB,ETF,BOND,OTHER'], ['E2:E2000', 'Direct,Regular'], ['F2:F2000', 'Growth,IDCW,Bonus']])],
-    ['xl/worksheets/sheet2.xml', sheetXml(help, null, null)]]);
+    ['xl/worksheets/sheet1.xml', sh1],
+    ['xl/worksheets/sheet2.xml', sh2],
+    ['xl/sharedStrings.xml', sst]]);
 }
 export const planOptionOf = name => { const n = String(name || ''); return { plan: /direct/i.test(n) ? 'Direct' : /regular/i.test(n) ? 'Regular' : '', option: /idcw|dividend/i.test(n) ? 'IDCW' : /bonus/i.test(n) ? 'Bonus' : /growth/i.test(n) ? 'Growth' : '' }; };
 const cap = s => { const t = S(s).toLowerCase(); return t ? t[0].toUpperCase() + t.slice(1) : ''; };
@@ -219,7 +226,7 @@ export function parseTemplate(sheets) {
 // ---------- matching: ISIN, then AMFI code, then name + plan + option, then name alone ----------
 const nameKey = h => norm(String(h.name || '').replace(/\b(direct|regular|plan|growth|idcw|dividend|bonus|option|fund)\b/gi, ' ').replace(/[^a-z0-9 ]/gi, ' ').replace(/\s+/g, ' '));
 export function planImport2(existing, parsed, broker, accountId) {
-  const multi = !!parsed.multi, plan = { add: [], update: [], same: [], missing: [], byName: [], dupes: [] }, used = new Set();
+  const multi = !!parsed.multi, plan = { add: [], update: [], same: [], missing: [], byName: [], dupes: [], dupIsin: [], elsewhere: [] }, used = new Set();
   const live = (existing || []).filter(x => !x.isArchived), brokersIn = new Set(parsed.holdings.map(h => norm(multi ? h.broker : broker)));
   parsed.holdings.forEach(h => {
     const hb = multi ? h.broker : broker, ha = multi ? h.accountId : accountId;
@@ -239,6 +246,11 @@ export function planImport2(existing, parsed, broker, accountId) {
   // possible duplicates inside the file: same fund name, different plan/option or ids
   const seen = new Map(); parsed.holdings.filter(h => h.kind === 'MF').forEach(h => { const po = planOptionOf(h.name), k = norm(h.broker) + '|' + nameKey(h) + '|' + (h.plan || po.plan) + '|' + (h.option || po.option); (seen.get(k) || seen.set(k, []).get(k)).push(h); });
   seen.forEach(a => { if (a.length > 1) plan.dupes.push(a.map(h => h.name).join('  /  ')); });
+  // same ISIN twice in the file (any type)
+  const byIsin = new Map(); parsed.holdings.forEach(h => { const i = S(h.isin).toUpperCase(); if (!i) return; const k = norm(multi ? h.broker : broker) + '|' + i; (byIsin.get(k) || byIsin.set(k, []).get(k)).push(h); });
+  byIsin.forEach((a, k) => { if (a.length > 1) plan.dupIsin.push(k.split('|')[1] + ': ' + a.map(h => h.name).join(' / ')); });
+  // a New row whose ISIN already exists under another broker or client ID
+  plan.elsewhere = plan.add.map(h => { const i = S(h.isin).toUpperCase(); if (!i) return null; const o = live.find(x => S(x.isin).toUpperCase() === i); return o ? h.name + ' is also saved under ' + (o.broker || 'no broker') + (o.accountId ? ' / ' + o.accountId : '') : null; }).filter(Boolean);
   return plan;
 }
 export function applyImport2(book, plan, ctx, removeMissing) {

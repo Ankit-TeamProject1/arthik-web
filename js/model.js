@@ -121,7 +121,8 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
     const gain = cost > 0 ? (value - cost) / cost * 100 : null;
     add(x.kind === 'MF' ? 'mf' : 'demat', { src: x, hold: true, kind: x.kind || 'OTHER', broker: x.broker || '', name: x.name, sub: [x.broker, x.accountId, x.tag].filter(Boolean).join(' · '), value, cost,
       lines: [`${+units.toFixed(4)} ${x.kind === 'MF' ? 'units' : 'qty'} · avg ${price2(x.avgPrice)} · invested ${money(cost)}${gain === null ? '' : ' · ' + pct(gain)}`,
-              +x.price > 0 ? `${x.kind === 'MF' ? 'NAV' : 'Price'} ${price2(price)}${x.priceDate ? ' as of ' + fmtDate(x.priceDate) : ''}` : 'No price saved — valued at your average cost'], excluded: x.excludeFromNetWorth });
+              +x.price > 0 ? `${x.kind === 'MF' ? 'NAV' : 'Price'} ${price2(price)}${x.priceDate ? ' as of ' + fmtDate(x.priceDate) : ''}` : 'No price saved — valued at your average cost',
+              ...(x.sip && x.sip.sipAmount > 0 && !x.sip.isHeld ? [`SIP ${money(x.sip.sipAmount)}/month`] : [])], excluded: x.excludeFromNetWorth });
   });
 
   live(book.insurancePolicies).forEach(x => add('insurance', { src: x, name: x.policyName, sub: [x.insurerName, x.policyType].filter(Boolean).join(' · '),
@@ -237,7 +238,8 @@ export function computeExpense(book, now = Date.now()) {
   const upcoming = (book.recurringRules || []).filter(r => !r.isDeleted && !r.isPaused && r.nextRunAt <= now + 7 * 86400000 && (!r.endDate || r.nextRunAt <= r.endDate))
     .sort((a, b) => a.nextRunAt - b.nextRunAt).map(r => ({ ...r, account: acc[r.accountLocalId], cat: cat[r.categoryLocalId] }));
   const owed = (book.expenseReceivables || []).filter(r => !r.isCollected);
-  return { txs, acc, cat, accounts, rulesAll: (book.recurringRules || []).filter(r => !r.isDeleted), today, month, monthIncome, budgets, topCats, upcoming, owed, total: accounts.reduce((s, a) => s + a.balance, 0) };
+  const owedTx = txs.filter(t => t.settle && !t.settle.paid && t.settle.kind === 'OWED_TO_ME'), oweTx = txs.filter(t => t.settle && !t.settle.paid && t.settle.kind === 'I_OWE');
+  return { txs, acc, cat, accounts, rulesAll: (book.recurringRules || []).filter(r => !r.isDeleted), today, month, monthIncome, budgets, topCats, upcoming, owed, owedTx, oweTx, total: accounts.reduce((s, a) => s + a.balance, 0) };
 }
 
 const _pretty = v => String(v || '').replace(/_/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase());

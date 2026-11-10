@@ -224,3 +224,8 @@ a.btn{display:inline-block;text-decoration:none;text-align:center}
 .okbox{background:color-mix(in srgb,#22C55E 14%,var(--card));border:1px solid color-mix(in srgb,#22C55E 35%,var(--line));border-radius:12px;padding:10px 12px;margin:12px 0;font-size:14px}
 .warnbox{background:color-mix(in srgb,#F59E0B 16%,var(--card));border:1px solid color-mix(in srgb,#F59E0B 40%,var(--line));border-radius:12px;padding:10px 12px;margin:10px 0;font-size:13px}
 .pickbtn{width:100%;text-align:left}
+
+.brow2{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--line)}
+.stack{display:flex;flex-direction:column;gap:10px;margin:8px 0}
+
+.plbox{max-height:34vh;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:8px 8px 8px 24px;margin:4px 0 12px}

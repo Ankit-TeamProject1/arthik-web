@@ -4,7 +4,7 @@ import { optionList, sameName, KIND_LABEL } from './lists.js';
 import { encrypt, decrypt, isEncrypted } from './crypto.js';
 import { loanEmi, loanSchedule } from './calc.js';
 import { RTYPES, recurringItems, eventItems, allDue, confirmInBook, declineInBook, rentPending, calendarEvents, buildIcs, googleLink, eventTitle } from './recurring.js';
-import { readFile, parseStatement, planImport2 as planImport, applyImport2 as applyImport, buildHoldingsXlsx, classify, KINDS, KIND_NAME } from './broker.js';
+import { readFile, parseStatement, planImport2 as planImport, applyImport2 as applyImport, buildHoldingsXlsx, classify, planOptionOf, KINDS, KIND_NAME } from './broker.js';
 import { GOAL_MAP, assetLabel, utcMonth, CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, setMask, money, pct, fmtDate, metalLabel, price2 } from './model.js';
 
 const root = document.getElementById('app');
@@ -166,7 +166,7 @@ function screenSetup(replacing) {
 
 // ---------- main app ----------
 const NAV_W = [
-  { id: 'dashboard', label: 'Home' }, { id: 'liabilities', label: 'Liabilities' }, { id: 'cards', label: 'Credit cards' }, { id: 'goals', label: 'Goals' },
+  { id: 'dashboard', label: 'Home' }, { id: 'liabilities', label: 'Liabilities' }, { id: 'goals', label: 'Goals' },
   { id: 'rent', label: 'Rent' }, { id: 'recurring', label: 'Recurring' }, { id: 'settings', label: 'Settings' },
 ];
 const NAV_E = [
@@ -195,7 +195,7 @@ function route() {
   setMask(false);
   const isExp = !!book && book.bookType === 'EXPENSE';
   const NAV = isExp ? NAV_E : NAV_W;
-  if (!book) body = emptyState();
+  if (!book) body = page === 'settings' ? pageSettings() : emptyState();
   else if (isExp && page === 'transactions') body = pageEntries();
   else if (page === 'more') body = pageMore();
   else if (page === 'calendar') body = pageCalendar();
@@ -207,8 +207,7 @@ function route() {
   else if (isExp && page !== 'settings') body = pageExpenseDashboard();
   else if (page === 'cat') body = pageCategory(arg);
   else if (page === 'invest') body = pageInvest();
-  else if (page === 'liabilities') body = pageLiabilities(false);
-  else if (page === 'cards') body = pageLiabilities(true);
+  else if (page === 'liabilities' || page === 'cards') body = pageLiabilities();
   else if (page === 'goals') body = pageGoals();
   else if (page === 'rent') body = pageRent();
   else if (page === 'recurring') body = pageWealthRecurring();
@@ -216,7 +215,7 @@ function route() {
   else if (page === 'trash') body = pageTrash();
   else if (page === 'settings') body = pageSettings();
   else body = pageDashboard();
-  const active = ['cat', 'invest'].includes(page) ? 'dashboard' : ['accounts', 'categories', 'trash'].includes(page) ? 'settings' : (NAV.find(n => n.id === page) ? page : 'dashboard');
+  const active = ['cat', 'invest'].includes(page) ? 'dashboard' : ['accounts', 'categories', 'trash'].includes(page) ? 'settings' : page === 'cards' ? 'liabilities' : (NAV.find(n => n.id === page) ? page : 'dashboard');
   const dueN = !book ? 0 : isExp ? dueRules(book).length : wDue(book, true).length;
   const mkNav = (list, act) => h('nav', { class: 'nav', 'aria-label': 'Main' }, list.map(n => h('a', { href: '#/' + n.id, class: n.id === act ? 'on' : '', 'aria-current': n.id === act ? 'page' : null }, h('span', { class: 'dot' }), n.label, n.id === 'recurring' && dueN ? h('span', { class: 'reddot', 'aria-label': dueN + ' due' }) : null)));
   const mList = isExp ? NAV_EM : NAV_WM, mActive = mList.some(n => n.id === page) ? page : (['dashboard', 'cat', 'invest'].includes(page) ? 'dashboard' : 'more');
@@ -242,7 +241,7 @@ addEventListener('keydown', e => {
 });
 
 function emptyState() {
-  return h('div', null, h('h1', null, 'No books found'), h('p', null, 'Your backup has no active books.'));
+  return h('div', null, h('h1', null, 'No books found'), h('p', null, 'There are no active books.'), (S.data.books || []).some(b => b.isArchived) ? h('p', null, h('a', { class: 'btn primary', href: '#/settings' }, 'Restore a deleted book')) : null);
 }
 
 function bookPicker() {
@@ -293,7 +292,7 @@ const mask = (t) => (hidden() ? '••••••' : t);
 function pageMore() {
   const book = currentBook(), isExp = book.bookType === 'EXPENSE', c = computed();
   const links = isExp ? [['#/budgets', 'Budgets', 'Monthly limits per category'], ['#/calendar', 'Calendar reminders', 'Add due dates to Google Calendar (optional)'], ['#/settings', 'Settings', 'Accounts, categories, backup, theme'], ['#/trash', 'Recently deleted', trashItems(book).length + ' item(s) you can restore']]
-    : [['#/cards', 'Credit cards', 'Dues on your cards'], ['#/goals', 'Goals', 'Savings goals and progress'], ['#/rent', 'Rent', 'Properties you rent out'], ['#/calendar', 'Calendar reminders', 'Add due dates to Google Calendar (optional)'], ['#/settings', 'Settings', 'Backup, theme, your data file'], ['#/trash', 'Recently deleted', trashItems(book).length + ' item(s) you can restore']];
+    : [['#/goals', 'Goals', 'Savings goals and progress'], ['#/rent', 'Rent', 'Properties you rent out'], ['#/calendar', 'Calendar reminders', 'Add due dates to Google Calendar (optional)'], ['#/settings', 'Settings', 'Backup, theme, your data file'], ['#/trash', 'Recently deleted', trashItems(book).length + ' item(s) you can restore']];
   return h('div', null, bookHeader('More', book.name), h('div', { class: 'list' }, links.map(([href, t, sub]) => h('a', { class: 'item clk morelink', href }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, t), h('div', { class: 'ival' }, '›')), h('div', { class: 'isub' }, sub)))));
 }
 function pageDashboard() {
@@ -320,8 +319,8 @@ function pageDashboard() {
       change !== null && !hidden() ? h('div', { class: 'tnote ' + (change >= 0 ? 'up' : 'down') }, pct(change) + ' vs about a month ago') : null,
       hidden() ? null : trend(book, c.netWorth)),
     h('section', { class: 'card alloc' }, d.svg, h('ul', { class: 'legend' }, d.parts.sort((a, b) => b.total - a.total).map(p => h('li', null, h('span', { class: 'sw', style: { background: p.color } }), `${p.label} ${(p.total / d.tot * 100).toFixed(1)}%`))))),
-    comingUp(book),
     h('h2', null, 'Categories'), h('div', { class: 'grid g3d' }, tiles),
+    comingUp(book),
     h('div', { class: 'small' }, 'Prices and NAVs are the last ones saved by your phone. Live refresh arrives in a later phase.'));
 }
 
@@ -417,51 +416,106 @@ function pageInvest() {
       h('div', { class: 'isub' }, 'Invested ' + money(cost) + (gain === null ? '' : ' · ' + (val >= cost ? 'Gain ' : 'Loss ') + money(Math.abs(val - cost)) + ' (' + pct(gain) + ')'))),
     canEdit() ? h('div', { class: 'row', style: { margin: '0 0 12px' } }, h('button', { class: 'btn primary', onclick: () => openUpload() }, 'Upload broker statement'),
       h('button', { class: 'btn primary', onclick: () => openWealth('hold', null, { broker: invBroker && invBroker !== '-' ? invBroker : '', kind: invKind || 'STOCK' }) }, '+ Add holding'),
-      h('button', { class: 'btn', onclick: () => openWealth('mf', null) }, '+ Mutual fund with SIP'),
-      h('button', { class: 'btn', onclick: () => download('arthik-holdings-sample.xlsx', buildHoldingsXlsx([], true)) }, 'Download sample Excel'),
-      h('button', { class: 'btn', onclick: () => download('arthik-holdings-' + new Date().toISOString().slice(0, 10) + '.xlsx', buildHoldingsXlsx((currentBook().brokerHoldings || []).filter(x => !x.isArchived).map(x => [x.broker, x.accountId, x.kind, x.name, x.plan, x.option, x.isin, x.amfi, x.folio, x.units, x.avgPrice, x.price || '', x.priceDate ? dstr(x.priceDate) : '', x.tag, x.note || '']), false)) }, 'Download my holdings (Excel)')) : null,
+      h('button', { class: 'btn ghost', onclick: openExcelMenu }, 'Excel ▾')) : null,
+    canEdit() && legacyList(currentBook()).length ? h('div', { class: 'okbox' }, h('b', null, legacyList(currentBook()).length + ' older entr' + (legacyList(currentBook()).length > 1 ? 'ies' : 'y') + ' in the old format. '), 'Move them into the new list to manage everything in one place. ', h('button', { class: 'btn', type: 'button', onclick: openConvertOld }, 'Move to new list')) : null,
     brokers.length || unlinked ? h('div', { class: 'tabrow', role: 'tablist', 'aria-label': 'Broker' }, tab('All accounts', !invBroker, () => { invBroker = ''; }), brokers.map(b => tab(b, sameName(b, invBroker), () => { invBroker = b; })), unlinked && brokers.length ? tab('Not linked', invBroker === '-', () => { invBroker = '-'; }) : null) : null,
     kinds.length ? h('div', { class: 'tabrow', role: 'tablist', 'aria-label': 'Type' }, tab('All', !invKind, () => { invKind = ''; }, byB.length), kinds.map(([k, l, a]) => tab(l, invKind === k, () => { invKind = k; }, a.length))) : null,
     list.length > 1 ? sortBar() : null,
     list.length ? h('div', { class: 'list' }, sortItems(list).map(it => itemCard(it, it.hold ? 'hold' : it._cat))) : h('p', { class: 'empty' }, canEdit() ? 'Nothing here yet. Upload your broker statement, or add a holding.' : 'Nothing here yet.'));
 }
+// older Mutual Fund / Demat entries (Android format) that can be moved into the new holdings list
+function legacyList(book) {
+  const out = [];
+  (book.mutualFunds || []).filter(x => !x.isArchived).forEach(x => out.push({ arr: 'mutualFunds', idf: 'schemeName', src: x, name: x.schemeName, broker: x.platformName || '', kind: 'MF' }));
+  (book.dematHoldings || []).filter(x => !x.isArchived).forEach(x => out.push({ arr: 'dematHoldings', idf: 'stockSymbol', src: x, name: x.stockSymbol, broker: x.accountName || '', kind: classify({ name: x.stockSymbol, isin: '', sector: '', itype: '' }) }));
+  return out;
+}
+function toHolding(l) {
+  const x = l.src;
+  if (l.arr === 'mutualFunds') { const es = (x.entries || []).filter(e => !e.isDeleted), u = es.reduce((a, e) => a + (e.unitsAllotted || 0), 0), inv = es.reduce((a, e) => a + (e.investedAmount || 0), 0), po = planOptionOf(x.schemeName);
+    return { broker: l.broker, accountId: '', kind: 'MF', name: x.schemeName, isin: '', units: +u.toFixed(4), avgPrice: u > 0 ? +(inv / u).toFixed(4) : 0, price: +x.lastFetchedNav > 0 ? +x.lastFetchedNav : 0, priceDate: x.lastFetchedAt || null, tag: '', plan: po.plan, option: po.option, amfi: x.schemeCode || '', folio: x.folioNumber || '', note: '', sip: x.sip || null, entries: JSON.parse(JSON.stringify(es)), excludeFromNetWorth: !!x.excludeFromNetWorth, isArchived: false }; }
+  return { broker: l.broker, accountId: '', kind: l.kind, name: x.stockSymbol, isin: '', units: +x.unitsHeld || 0, avgPrice: +x.avgBuyPrice || 0, price: +x.lastFetchedPrice > 0 ? +x.lastFetchedPrice : 0, priceDate: x.lastFetchedAt || null, tag: '', plan: '', option: '', amfi: '', folio: '', note: '', sip: null, entries: [], excludeFromNetWorth: !!x.excludeFromNetWorth, isArchived: false };
+}
+function openConvertOld() {
+  const book = currentBook(), list = legacyList(book);
+  const clash = l => (book.brokerHoldings || []).some(h2 => !h2.isArchived && sameName(h2.name, l.name) && sameName(h2.broker || '', l.broker));
+  const ok = list.filter(l => !clash(l)), skip = list.filter(clash);
+  sheetForm('Move older entries to the new list', api => h('div', null,
+    h('p', { class: 'small' }, 'Each older entry becomes a holding with the same name, units, average price and last price. The older entry is then moved to Recently deleted (you can bring it back from there). Your total and Net Worth do not change.'),
+    h('div', { class: 'okbox' }, h('b', null, ok.length + ' will be moved'), ok.map(l => h('div', { class: 'small' }, `${KIND_NAME[l.kind] || l.kind} · ${l.name}${l.broker ? ' · ' + l.broker : ''}`))),
+    skip.length ? h('div', { class: 'warnbox' }, h('b', null, skip.length + ' left as they are (a holding with the same name and account already exists)'), skip.map(l => h('div', { class: 'small' }, l.name))) : null,
+    h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn primary big', disabled: !ok.length, onclick: ev => api.run(ev.currentTarget, 'Moving…', () => mutateWealth(b => {
+      b.brokerHoldings = b.brokerHoldings || [];
+      ok.forEach(l => { const o = (b[l.arr] || []).find(y => !y.isArchived && y[l.idf] === l.name); if (!o) return; b.brokerHoldings.push(toHolding({ ...l, src: o })); o.isArchived = true; o.deletedAt = Date.now(); });
+    })).then(done => { if (done) toast(ok.length + ' moved ✓'); }) }, 'Confirm and move ' + ok.length))));
+}
+// every holding shown on the Investments page as template rows (older Mutual Fund / Demat entries included, marked in Notes)
+function holdingRows(book) {
+  const rows = (book.brokerHoldings || []).filter(x => !x.isArchived).map(x => [x.broker, x.accountId, x.kind, x.name, x.plan, x.option, x.isin, x.amfi, x.folio, x.units, x.avgPrice, x.price || '', x.priceDate ? dstr(x.priceDate) : '', x.tag, x.note || '']);
+  (book.mutualFunds || []).filter(x => !x.isArchived).forEach(x => { const es = x.entries || [], u = es.reduce((a, e) => a + (e.unitsAllotted || 0), 0), inv = es.reduce((a, e) => a + (e.investedAmount || 0), 0), po = planOptionOf(x.schemeName);
+    rows.push([x.platformName || '', '', 'MF', x.schemeName, po.plan, po.option, '', x.schemeCode || '', x.folioNumber || '', +u.toFixed(4), u > 0 ? +(inv / u).toFixed(4) : 0, x.lastFetchedNav || '', x.lastFetchedAt ? dstr(x.lastFetchedAt) : '', '', 'older Mutual Fund entry']); });
+  (book.dematHoldings || []).filter(x => !x.isArchived).forEach(x => rows.push([x.accountName || '', '', classify({ name: x.stockSymbol, isin: '', sector: '', itype: '' }), x.stockSymbol, '', '', '', '', '', x.unitsHeld, x.avgBuyPrice, x.lastFetchedPrice || '', x.lastFetchedAt ? dstr(x.lastFetchedAt) : '', '', 'older Demat entry']));
+  return rows;
+}
+function openExcelMenu() {
+  sheetForm('Excel', api => h('div', null, h('p', { class: 'small' }, 'Fill many holdings in one go, or keep an editable copy of what you have.'),
+    h('div', { class: 'stack' }, h('button', { class: 'btn', type: 'button', onclick: () => { download('arthik-holdings-sample.xlsx', buildHoldingsXlsx([], true)); closeModal(); } }, 'Download sample Excel (blank template)'),
+      h('button', { class: 'btn', type: 'button', onclick: () => { const rows = holdingRows(currentBook()); if (!rows.length) { api.fail('There are no holdings in this book yet, so there is nothing to download.'); return; } download('arthik-holdings-' + new Date().toISOString().slice(0, 10) + '.xlsx', buildHoldingsXlsx(rows, false)); closeModal(); toast(rows.length + ' holdings downloaded ✓'); } }, 'Download my holdings (Excel)'),
+      canEdit() ? h('button', { class: 'btn primary', type: 'button', onclick: () => openUpload() }, 'Upload a filled Excel / broker file') : null),
+    h('p', { class: 'small' }, 'Older Mutual Fund and Demat entries are included and marked in Notes. Re-uploading them would add them again as new holdings, so delete the older ones after you upload.')));
+}
+const SUPPORTED_BROKERS = [['Zerodha', 'Zerodha (Kite)']];
 function openUpload() {
   const book = currentBook();
   const st = { broker: '', account: '', parsed: null, plan: null, rm: false };
   sheetForm('Upload broker statement', api => {
     const box = h('div');
     const fileIn = h('input', { type: 'file', accept: '.xlsx,.xlsm,.csv', 'aria-label': 'Statement file' });
-    const bBtn = h('button', { type: 'button', class: 'btn pickbtn' }), acc = h('input', { type: 'text', 'aria-label': 'Client ID', autocomplete: 'off', placeholder: 'Client ID (read from the file if present)', oninput: e => { st.account = e.target.value; } });
-    const ctlBox = h('div'); const pickLabel = () => { bBtn.textContent = st.broker || 'Choose broker / platform…'; };
-    bBtn.onclick = () => openBankPicker(st.broker, optionList('broker', S.data), (n, isNew) => { st.broker = n; if (isNew) newPicks.push({ kind: 'broker', name: n }); pickLabel(); if (st.parsed) previewPaint(); }, 'broker'); pickLabel();
+    const bBtn = h('select', { 'aria-label': 'Broker', onchange: e => { st.broker = e.target.value; if (st.parsed) previewPaint(); } }, h('option', { value: '' }, 'Choose broker…'), SUPPORTED_BROKERS.map(b => h('option', { value: b[0], selected: st.broker === b[0] }, b[1]))), acc = h('button', { type: 'button', class: 'btn pickbtn' });
+    const ctlBox = h('div'); const pickLabel = () => { bBtn.value = st.broker || ''; acc.textContent = st.account || 'Choose client ID / account…'; };
+    acc.onclick = () => openBankPicker(st.account, optionList('clientid', S.data), (n, isNew) => { st.account = n; if (isNew) newPicks.push({ kind: 'clientid', name: n }); pickLabel(); if (st.parsed) previewPaint(); }, 'clientid');
+    bBtn.onclick = null;
     const newPicks = [];
     const read = h('button', { type: 'button', class: 'btn primary big' }, 'Read the file');
-    const go = h('button', { type: 'button', class: 'btn primary big' }, 'Import');
-    const preview = h('div'); ctlBox.append(h('div', { class: 'flbl' }, 'Broker / platform'), bBtn, h('div', { class: 'flbl' }, 'Client ID'), acc);
+    const go = h('button', { type: 'button', class: 'btn primary big' }, 'Confirm and save');
+    const preview = h('div'); ctlBox.append(h('div', { class: 'flbl' }, 'Broker'), bBtn, h('div', { class: 'small' }, 'Only brokers whose statement we can read are listed. For any other broker, use the Arthik Excel template (Excel ▾ → sample): it works for every broker. More brokers are added when a sample statement is available.'), h('div', { class: 'flbl' }, 'Client ID'), acc);
     const previewPaint = () => {
       const p = st.parsed; if (!p) { preview.replaceChildren(); return; }
       st.plan = planImport(book.brokerHoldings, p, st.broker || '', st.account); bBtn.parentElement; ctlBox.hidden = !!p.multi;
       const pl = st.plan, nameOf = x => x.name;
-      const sec = (t, a, f) => a.length ? h('div', null, h('div', { class: 'flbl' }, t + ' (' + a.length + ')'), h('ul', { class: 'plist' }, a.slice(0, 40).map(x => h('li', null, f(x))), a.length > 40 ? h('li', { class: 'small' }, '… and ' + (a.length - 40) + ' more') : null)) : null;
+      const sec = (t, a, f) => a.length ? h('div', null, h('div', { class: 'flbl' }, t + ' (' + a.length + ')'), h('ul', { class: 'plist plbox' }, a.map(x => h('li', null, f(x))))) : null;
+      const diff = (o, n) => { const t = []; if (Math.abs(o.units - n.units) > 1e-6) t.push(`units ${+(+o.units).toFixed(4)} → ${+(+n.units).toFixed(4)}`); if (Math.abs((o.avgPrice || 0) - n.avgPrice) > 1e-4) t.push(`avg ${price2(o.avgPrice)} → ${price2(n.avgPrice)}`); if (n.price > 0 && Math.abs((o.price || 0) - n.price) > 1e-4) t.push(`price ${price2(o.price)} → ${price2(n.price)}`); return t.join(', '); };
+      const whose = x => (x.broker || st.broker) + (x.accountId || st.account ? ' / ' + (x.accountId || st.account) : '');
+      const fNew = x => `${KIND_NAME[x.kind]} · ${nameOf(x)} · ${+x.units.toFixed(4)} @ ${price2(x.avgPrice)} · ${whose(x)}`, fChg = x => `${nameOf(x.now)} · ${diff(x.old, x.now)}`, fGone = x => `${x.name} · ${x.broker || ''}${x.accountId ? ' / ' + x.accountId : ''}`;
       const legacy = [...(book.mutualFunds || []).filter(x => !x.isArchived).map(x => x.schemeName), ...(book.dematHoldings || []).filter(x => !x.isArchived).map(x => x.stockSymbol)];
       const dup = p.holdings.filter(x => legacy.some(l => sameName(l, x.name)));
-      preview.replaceChildren(
-        h('div', { class: 'okbox' }, 'Found ' + p.holdings.length + ' holdings' + (p.asOn ? ' as on ' + fmtDate(p.asOn) : '') + (p.clientId ? ' · client ' + p.clientId : '') + '. Nothing is saved until you press Import.'),
-        p.notes.map(n => h('div', { class: 'small' }, n)),
-        sec('New', pl.add, x => `${KIND_NAME[x.kind]} · ${nameOf(x)} · ${x.units} @ ${price2(x.avgPrice)}`),
-        sec('Changed', pl.update, x => `${nameOf(x.now)} · ${+x.old.units.toFixed(4)} → ${+x.now.units.toFixed(4)} units, price ${price2(x.old.price)} → ${price2(x.now.price)}`),
-        pl.same.length ? h('div', { class: 'small' }, pl.same.length + ' unchanged (their price date will be refreshed).') : null,
-        pl.missing.length ? h('div', null, sec('Saved earlier but not in this file', pl.missing, x => x.name), toggleRow('Remove these (move to Recently deleted)', () => st.rm, v => { st.rm = v; })) : null,
+      const warns = () => [
         pl.byName.length ? h('div', { class: 'warnbox' }, 'Matched by name only (no ISIN or AMFI code): ' + pl.byName.slice(0, 4).join(', ') + (pl.byName.length > 4 ? '…' : '') + '. Please check these are the right plan and option.') : null,
         pl.dupes.length ? h('div', { class: 'warnbox' }, 'Possible duplicates in the file (same fund, different plan or option): ' + pl.dupes.slice(0, 3).join(' | ')) : null,
-        dup.length ? h('div', { class: 'warnbox' }, dup.length + ' of these also exist as older Mutual Fund / Demat entries (' + dup.slice(0, 3).map(x => x.name).join(', ') + (dup.length > 3 ? '…' : '') + '). After importing, delete the old ones to avoid counting twice.') : null,
-        h('div', { class: 'actions' }, go));
+        pl.dupIsin.length ? h('div', { class: 'warnbox' }, 'The same ISIN appears more than once in this file, so it would be added as separate holdings: ' + pl.dupIsin.slice(0, 3).join(' | ') + '. Merge those rows into one if they are the same holding.') : null,
+        pl.elsewhere.length ? h('div', { class: 'warnbox' }, 'Possibly the same holding saved under another broker or client ID: ' + pl.elsewhere.slice(0, 3).join(' | ') + (pl.elsewhere.length > 3 ? '…' : '') + '. Check this is not a duplicate.') : null,
+        dup.length ? h('div', { class: 'warnbox' }, dup.length + ' of these also exist as older Mutual Fund / Demat entries (' + dup.slice(0, 3).map(x => x.name).join(', ') + (dup.length > 3 ? '…' : '') + '). After importing, delete the old ones to avoid counting twice.') : null];
+      const summary = () => [pl.add.length ? 'add ' + pl.add.length + ' new' : '', pl.update.length ? 'update ' + pl.update.length : '', pl.same.length ? 'refresh the price date of ' + pl.same.length + ' unchanged' : '', st.rm && pl.missing.length ? 'move ' + pl.missing.length + ' to Recently deleted' : ''].filter(Boolean).join(', ');
+      const lists = () => [sec('New: will be added', pl.add, fNew), sec('Changed: will be updated', pl.update, fChg), st.rm ? sec('Will be moved to Recently deleted', pl.missing, fGone) : null,
+        pl.same.length ? h('div', { class: 'small' }, pl.same.length + ' unchanged (only their price date is refreshed).') : null];
+      const confirmPaint = () => {
+        const back = h('button', { type: 'button', class: 'btn' }, '← Back'); back.onclick = previewPaint;
+        preview.replaceChildren(h('div', { class: 'okbox' }, h('b', null, 'Please confirm. '), 'This will ' + (summary() || 'change nothing') + '. Nothing else in your data is touched.'), ...lists(), ...warns(), h('div', { class: 'actions' }, back, go));
+      };
+      go.textContent = 'Confirm and save'; go.disabled = false;
+      const review = h('button', { type: 'button', class: 'btn primary big' }, 'Review changes'); review.onclick = () => { if (!st.broker && !st.parsed.multi) return api.fail('Choose the broker this statement is from.'); if (!(pl.add.length + pl.update.length + pl.same.length + (st.rm ? pl.missing.length : 0))) return api.fail('There is nothing to import.'); confirmPaint(); };
+      preview.replaceChildren(
+        h('div', { class: 'okbox' }, 'Found ' + p.holdings.length + ' holdings' + (p.asOn ? ' as on ' + fmtDate(p.asOn) : '') + (p.clientId ? ' · client ' + p.clientId : '') + '. Nothing is saved yet. Next you will see every change and confirm it.'),
+        p.notes.map(n => h('div', { class: 'small' }, n)),
+        ...lists(),
+        pl.missing.length ? h('div', null, !st.rm ? sec('Saved earlier but not in this file (kept)', pl.missing, fGone) : null, toggleRow('Also move these to Recently deleted', () => st.rm, v => { st.rm = v; previewPaint(); })) : null,
+        ...warns(), h('div', { class: 'actions' }, review));
     };
     read.onclick = async () => {
       const f = fileIn.files && fileIn.files[0]; if (!f) return api.fail('Choose your statement file first.');
       read.disabled = true; read.textContent = 'Reading…';
       try { const sheets = await readFile(f); const p = parseStatement(sheets); if (!p.holdings.length) throw new Error(p.notes.join(' ') || 'No holdings found.');
-        st.parsed = p; if (!st.broker && p.broker) st.broker = p.broker; if (!st.account && p.clientId) { st.account = p.clientId; acc.value = p.clientId; } pickLabel(); previewPaint(); }
+        st.parsed = p; if (!st.broker && p.broker) st.broker = p.broker; if (!st.account && p.clientId) { st.account = p.clientId; } pickLabel(); previewPaint(); }
       catch (e) { st.parsed = null; preview.replaceChildren(); api.fail(e.message); }
       read.disabled = false; read.textContent = 'Read the file';
     };
@@ -469,7 +523,7 @@ function openUpload() {
       if (!st.broker && !st.parsed.multi) return api.fail('Choose the broker this statement is from.');
       const asOn = st.parsed.asOn, ctx = { broker: st.broker, accountId: st.parsed.multi ? '' : st.account.trim(), asOn };
       api.run(go, 'Saving…', () => mutateWealth((b, d) => { newPicks.forEach(({ kind, name }) => { d.customLists = d.customLists || {}; d.customLists[kind] = d.customLists[kind] || []; if (!optionList(kind, d).some(x => sameName(x, name))) d.customLists[kind].push(name); });
-        const plan = planImport(b.brokerHoldings, st.parsed, ctx.broker, ctx.accountId); applyImport(b, plan, ctx, st.rm); })).then(ok => ok && toast('Statement imported ✓'));
+        const plan = planImport(b.brokerHoldings, st.parsed, ctx.broker, ctx.accountId); applyImport(b, plan, ctx, st.rm); })).then(ok => ok && toast('Imported ✓ ' + (st.plan ? st.plan.add.length + ' added, ' + st.plan.update.length + ' updated' : '')));
     };
     return h('div', null, h('p', { class: 'small' }, 'Choose the holdings file from your broker (Excel or CSV), or the Arthik sample Excel after filling it. It is read inside this page; the file itself is never uploaded or saved.'),
       h('div', { class: 'flbl' }, 'Statement file'), fileIn, ctlBox,
@@ -478,26 +532,48 @@ function openUpload() {
 }
 
 const isCard = l => String(l.src && l.src.liabilityType || '').toLowerCase().replace(/[^a-z]/g, '') === 'creditcard';
-function pageLiabilities(cards) {
-  const c = computed(), list = c.liabilities.filter(l => isCard(l) === cards), total = list.filter(l => !l.excluded).reduce((a, l) => a + l.value, 0);
-  return h('div', null, bookHeader(cards ? 'Credit cards' : 'Liabilities', cards ? 'Card dues' : 'Loans and other dues'),
-    h('section', null, h('div', { class: 'lbl' }, 'Total outstanding'), h('div', { class: 'big2' }, money(total))),
-    canEdit() ? h('div', { class: 'row', style: { margin: '0 0 12px' } },
-      cards ? h('button', { class: 'btn primary', onclick: () => openWealth('card', null) }, '+ Add credit card')
-        : [h('button', { class: 'btn primary', onclick: () => openWealth('liability', null, { liabilityType: 'PERSONAL_LOAN' }) }, '+ Add liability'), h('button', { class: 'btn primary', onclick: () => openWealth('loan', null) }, '+ Add loan (EMI schedule)')]) : null,
+let liabKind = '';
+const liabKindOf = l => isCard(l) ? 'CARD' : l.kind === 'Loan' ? 'LOAN' : 'OTHER';
+function openAddLiability() {
+  sheetForm('Add liability', api => h('div', null, h('div', { class: 'flbl' }, 'What is it?'),
+    h('div', { class: 'stack' },
+      h('button', { type: 'button', class: 'btn big', onclick: () => { api.close(); openWealth('loan', null); } }, 'Bank loan with EMIs (home, car, education, personal)'),
+      h('button', { type: 'button', class: 'btn big', onclick: () => { api.close(); openWealth('card', null); } }, 'Credit card'),
+      h('button', { type: 'button', class: 'btn big', onclick: () => { api.close(); openWealth('liability', null, { liabilityType: 'PERSONAL_LOAN' }); } }, 'Other money I owe')),
+    h('p', { class: 'small' }, 'A bank loan gets a full EMI schedule you can tick off. A credit card tracks the bill and its pay-by date. Other money is a single amount you owe, with an optional pay-by date or your own EMI.')));
+}
+function pageLiabilities() {
+  const c = computed(), all = c.liabilities, list = all.filter(l => !liabKind || liabKindOf(l) === liabKind), total = list.filter(l => !l.excluded).reduce((a, l) => a + l.value, 0);
+  const kinds = [['LOAN', 'Loans'], ['CARD', 'Credit cards'], ['OTHER', 'Other dues']].map(([k, l]) => [k, l, all.filter(x => liabKindOf(x) === k).length]).filter(x => x[2]);
+  if (liabKind && !kinds.some(x => x[0] === liabKind)) liabKind = '';
+  const tab = (label, on, fn, n) => h('button', { type: 'button', class: 'chip2' + (on ? ' on' : ''), onclick: () => { fn(); route(); } }, label, h('span', { class: 'cnt' }, ' ' + n));
+  return h('div', null, bookHeader('Liabilities', 'Loans, credit cards and other dues'),
+    h('section', null, h('div', { class: 'lbl' }, 'Total outstanding' + (liabKind ? ' · ' + (kinds.find(x => x[0] === liabKind) || [0, ''])[1] : '')), h('div', { class: 'big2' }, money(total))),
+    canEdit() ? h('div', { class: 'row', style: { margin: '0 0 12px' } }, h('button', { class: 'btn primary', onclick: openAddLiability }, '+ Add')) : null,
+    kinds.length > 1 ? h('div', { class: 'tabrow', role: 'tablist', 'aria-label': 'Type' }, tab('All', !liabKind, () => { liabKind = ''; }, all.length), kinds.map(([k, l, n]) => tab(l, liabKind === k, () => { liabKind = k; }, n))) : null,
     list.length > 1 ? sortBar() : null,
-    list.length ? h('div', { class: 'list' }, sortItems(list).map(l => itemCard({ ...l, sub: (l.kind === 'Loan' ? 'Loan · ' : '') + (l.sub || '') }, isCard(l) ? 'card' : l.key))) : h('p', { class: 'empty' }, cards ? 'No credit cards.' : 'No liabilities.'));
+    list.length ? h('div', { class: 'list' }, sortItems(list).map(l => itemCard({ ...l, sub: (l.kind === 'Loan' ? 'Loan · ' : '') + (l.sub || '') }, isCard(l) ? 'card' : l.key))) : h('p', { class: 'empty' }, 'No liabilities.'));
 }
 
 function pageGoals() {
   const c = computed();
   return h('div', null, bookHeader('Goals', 'Progress'),
     canEdit() ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => openWealth('goal', null) }, '+ Add goal') : null,
-    c.goals.length ? h('div', { class: 'list' }, c.goals.map(g => h('div', { class: 'item' + (canEdit() ? ' clk' : ''), role: canEdit() ? 'button' : null, tabindex: canEdit() ? 0 : null, onclick: canEdit() ? () => openWealth('goal', { src: g.src }) : null },
+    c.goals.length ? h('div', { class: 'list' }, c.goals.map(g => h('div', { class: 'item clk', role: 'button', tabindex: 0, onclick: () => openGoalDetail(g), onkeydown: e => { if (e.key === 'Enter') openGoalDetail(g); } },
       h('div', { class: 'irow' }, h('div', { class: 'iname' }, g.name), h('div', { class: 'ival' }, g.pct.toFixed(0) + '%')),
       h('div', { class: 'bar', role: 'progressbar', 'aria-valuenow': g.pct.toFixed(0), 'aria-valuemin': 0, 'aria-valuemax': 100 }, h('span', { style: { width: g.pct + '%' } })),
       h('div', { class: 'iline' }, `${money(g.current)} of ${money(g.target)}${g.targetDate ? ' · by ' + fmtDate(g.targetDate) : ''}`),
-      g.linked.map(l => h('div', { class: 'isub' }, `${l.cat}: ${l.name} — ${money(l.value)}` + (l.excluded ? ' (not counted: Net Worth switch is off)' : '')))))) : h('p', null, 'No goals yet.'));
+      g.linked.length ? h('div', { class: 'isub' }, g.linked.length + (g.linked.length > 1 ? ' linked items' : ' linked item') + ' · tap to see') : null))) : h('p', null, 'No goals yet.'));
+}
+function openGoalDetail(g) {
+  sheetForm(g.name, api => h('div', null,
+    h('div', { class: 'irow' }, h('div', { class: 'lbl' }, 'Progress'), h('b', null, g.pct.toFixed(0) + '%')),
+    h('div', { class: 'bar' }, h('span', { style: { width: g.pct + '%' } })),
+    h('div', { class: 'iline' }, `${money(g.current)} of ${money(g.target)}${g.targetDate ? ' · by ' + fmtDate(g.targetDate) : ''}`),
+    h('div', { class: 'flbl', style: { marginTop: '14px' } }, 'Linked items'),
+    g.linked.length ? h('div', { class: 'erows' }, g.linked.map(l => h('div', { class: 'erow' }, h('span', null, `${l.name} · ${l.cat}` + (l.excluded ? ' (not counted: Net Worth switch is off)' : '')), h('b', null, money(l.value)))))
+      : h('p', { class: 'small' }, 'Nothing linked yet. Pick this goal when you add an asset, or tick items in Edit goal.'),
+    canEdit() ? h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn primary big', onclick: () => { api.close(); openWealth('goal', { src: g.src }); } }, 'Edit goal')) : null));
 }
 
 function pageRent() {
@@ -537,7 +613,7 @@ function txRow(t, c) {
   const ed = canEdit() && !t.__ro;
   return h('div', { class: 'tx' + (ed ? ' clk' : ''), role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openEntry(t) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openEntry(t); } : null },
     h('span', { class: 'dotc', style: { background: dot } }),
-    h('div', { class: 'txm' }, h('div', { class: 'txt' }, title, h('span', { class: 'ttag ' + ty.cls }, ty.label)), h('div', { class: 'isub' }, dayLabel(t.occurredAt))),
+    h('div', { class: 'txm' }, h('div', { class: 'txt' }, title, h('span', { class: 'ttag ' + ty.cls }, ty.label), t.settle ? h('span', { class: 'ttag ' + (t.settle.paid ? '' : t.settle.kind === 'I_OWE' ? 'down' : 'blue') }, (t.settle.kind === 'I_OWE' ? 'I owe ' : 'Owed by ') + t.settle.person + (t.settle.paid ? ' · settled' : '')) : null), h('div', { class: 'isub' }, dayLabel(t.occurredAt))),
     h('div', { class: 'txa ' + ty.cls }, ty.sign + money(t.amount)));
 }
 
@@ -592,7 +668,7 @@ async function mutate(fn) {
         if (e.message !== 'CONFLICT') throw e;
         const f = await dbx.download(); if (!f) throw new Error('The file was removed from Dropbox. Nothing was saved.');
         const d = await decrypt(f.text, S.pw);
-        if (!d.ok) throw new Error('The file in Dropbox now has a different password. Nothing was saved.');
+        if (!d.ok) throw new Error('The password was changed on another device. Lock and unlock with the new password. Nothing was saved.');
         S.data = JSON.parse(d.text); S.enc = f.text; S.rev = f.rev; S.modified = f.modified; base = d.text; view.cache = null;
       }
     }
@@ -627,6 +703,16 @@ function openEntry(t) {
   const date = h('input', { type: 'date', value: dstr(t ? t.occurredAt : Date.now()), max: dstr(Date.now() + 86400000 * 366), 'aria-label': 'Date' });
   const note = h('input', { type: 'text', value: (t && t.note) || '', placeholder: 'Comment (optional)', maxlength: 120, 'aria-label': 'Comment' });
   const msg = h('div', { class: 'err', hidden: true });
+  const stl = { kind: t && t.settle ? t.settle.kind : '', person: t && t.settle ? t.settle.person : '' };
+  const people = [...new Set((book.transactions || []).map(x => x.settle && x.settle.person).filter(Boolean))];
+  const rcv = { on: false, acc: t ? t.accountLocalId : null }, rcvBox = h('div', null);
+  const stlBox = h('div', null), person = h('input', { type: 'text', 'aria-label': 'Person', placeholder: 'Whose money? e.g. Ankit', value: stl.person, list: 'ppl', autocomplete: 'off', maxlength: 40, oninput: e => { stl.person = e.target.value; } });
+  const stlPaint = () => { const ex = st.type === 'EXPENSE'; stlBox.hidden = !ex; if (!ex) return;
+    const paidInfo = t && t.settle && t.settle.paid ? h('div', { class: 'small' }, 'Marked paid on ' + fmtDate(t.settle.paidAt) + '. ' + (t.settle.receivedTxId ? 'The money received was recorded as an Income entry.' : 'No accounting entry was made.')) : null;
+    stlBox.replaceChildren(h('div', { class: 'flbl' }, 'Settle with someone? (optional)'),
+      chipRow([['', 'No'], ['OWED_TO_ME', 'Owed to me (I paid for them)'], ['I_OWE', 'I owe (they paid for me)']], () => stl.kind, v => { stl.kind = v; stlPaint(); }),
+      stl.kind ? h('div', null, h('div', { class: 'flbl' }, stl.kind === 'I_OWE' ? 'Who paid for you?' : 'Who do they owe?'), person, h('datalist', { id: 'ppl' }, people.map(p => h('option', { value: p }))),
+        h('div', { class: 'small' }, stl.kind === 'I_OWE' ? 'This entry reduces your account now. When you pay them back, press "Mark as paid": no second entry is made.' : 'This entry reduces your account now. When they pay you back, press "Mark as paid": no second entry is made.')) : null, paidInfo); };
   const typeBox = h('div', { class: 'seg', role: 'tablist' }), catBox = h('div', null), accBox = h('div', null), toBox = h('div', null);
   const chips = (list, key, box, label, extra) => { box.replaceChildren(h('div', { class: 'flbl' }, label), h('div', { class: 'chips' }, list.map(x => {
     const id = x.localId, on = st[key] === id, col = extra ? extra(x) : null;
@@ -639,6 +725,7 @@ function openEntry(t) {
     catBox.hidden = tr; if (!tr) chips(cats, 'cat', catBox, 'Category', x => catColors(c)[x.localId]);
     chips(accs, 'acc', accBox, tr ? 'From account' : 'Account (cash, bank, card…)');
     toBox.hidden = !tr; if (tr) chips(accs.filter(a => a.localId !== st.acc), 'to', toBox, 'To account');
+    stlPaint();
   }
   const save = h('button', { type: 'button', class: 'btn primary big' }, isEdit ? 'Save changes' : 'Save entry');
   const fail = m => { msg.textContent = m; msg.hidden = false; };
@@ -654,7 +741,11 @@ function openEntry(t) {
     const [y, m, dd] = date.value.split('-').map(Number), now = new Date();
     const same = isEdit && dstr(t.occurredAt) === date.value;
     const when = same ? t.occurredAt : (dstr(now) === date.value ? now.getTime() : new Date(y, m - 1, dd, 12).getTime());
+    const who = String(stl.person || '').trim().replace(/\s+/g, ' ');
+    if (st.type === 'EXPENSE' && stl.kind && !who) return fail('Type the name of the person.');
     const rec = { type: st.type, amount: amt, accountLocalId: st.acc, toAccountLocalId: tr ? st.to : null, categoryLocalId: tr ? null : st.cat, note: note.value.trim() || null, occurredAt: when };
+    const keepPaid = t && t.settle && t.settle.kind === stl.kind;
+    rec.settle = st.type === 'EXPENSE' && stl.kind ? { kind: stl.kind, person: who, paid: keepPaid ? !!t.settle.paid : false, paidAt: keepPaid ? t.settle.paidAt : null } : null;
     save.disabled = true; save.textContent = 'Saving…';
     try {
       await mutate(d => {
@@ -673,11 +764,21 @@ function openEntry(t) {
     try { await mutate(d => { const b = findBook(d, bname); if (!b) return; const x = (b.transactions || []).find(y => y.localId === t.localId); if (x) { x.isDeleted = true; x.deletedAt = Date.now(); } }); closeModal(); toast('Entry deleted · restore it from Settings'); route(); }
     catch (e) { fail(e.message + ' Nothing was deleted.'); del.disabled = false; }
   } }, 'Delete') : null;
+  const paintRcv = () => {
+    if (!(isEdit && t.settle && t.settle.kind === 'OWED_TO_ME' && !t.settle.paid)) return;
+    rcvBox.replaceChildren(toggleRow('Also record the money received (adds an Income entry)', () => rcv.on, v => { rcv.on = v; paintRcv(); }),
+      rcv.on ? h('div', null, h('div', { class: 'flbl' }, 'Received into'), h('div', { class: 'chips' }, accs.filter(a => !a.isArchived).map(a => h('button', { type: 'button', class: 'chip2' + (rcv.acc === a.localId ? ' on' : ''), onclick: () => { rcv.acc = a.localId; paintRcv(); } }, niceName(a.name)))),
+        h('div', { class: 'small' }, 'Off by default. If you leave it off, only the tile is marked paid and your balance does not change.')) : null);
+  };
+  paintRcv();
+  const paidBtn = isEdit && t.settle ? h('button', { type: 'button', class: 'btn' + (t.settle.paid ? '' : ' primary') }, t.settle.paid ? 'Mark as not paid' : 'Mark as paid') : null;
+  if (paidBtn) paidBtn.onclick = async () => { paidBtn.disabled = true; try { await mutate(d => { const b = findBook(d, bname); const x = b && (b.transactions || []).find(y => y.localId === t.localId); if (!x || !x.settle) throw new Error('This entry was changed on another device.'); if (x.settle.paid) { const r = x.settle.receivedTxId && b.transactions.find(y => y.localId === x.settle.receivedTxId); if (r) { r.isDeleted = true; r.deletedAt = Date.now(); } x.settle = { ...x.settle, paid: false, paidAt: null, receivedTxId: null }; }
+        else { let rid = null; if (rcv.on && x.settle.kind === 'OWED_TO_ME') { rid = b.transactions.reduce((mx, y) => Math.max(mx, y.localId || 0), 0) + 1; b.transactions.push({ localId: rid, type: 'INCOME', amount: x.amount, accountLocalId: rcv.acc != null ? rcv.acc : x.accountLocalId, toAccountLocalId: null, categoryLocalId: x.categoryLocalId, note: 'Received from ' + x.settle.person, occurredAt: Date.now() }); } x.settle = { ...x.settle, paid: true, paidAt: Date.now(), receivedTxId: rid }; } }); closeModal(); toast(t.settle.paid ? 'Marked as not paid' : 'Marked as paid ✓ (no new entry made)'); route(); } catch (e) { fail(e.message + ' Nothing was changed.'); paidBtn.disabled = false; } };
   const sheet = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': isEdit ? 'Edit entry' : 'Add entry' },
     h('div', { class: 'sheethead' }, h('h2', null, isEdit ? 'Edit entry' : 'Add entry'), h('button', { class: 'x', 'aria-label': 'Close', onclick: closeModal }, '×')),
-    typeBox, h('div', { class: 'flbl' }, 'Amount'), amount, catBox, accBox, toBox,
+    typeBox, h('div', { class: 'flbl' }, 'Amount'), amount, catBox, accBox, toBox, stlBox, rcvBox,
     h('div', { class: 'two' }, h('div', null, h('div', { class: 'flbl' }, 'Date'), date), h('div', null, h('div', { class: 'flbl' }, 'Comment'), note)),
-    msg, h('div', { class: 'actions' }, save, del));
+    msg, h('div', { class: 'actions' }, save, paidBtn, del));
   const ov = h('div', { class: 'overlay', onclick: e => { if (e.target === ov) closeModal(); } }, sheet);
   ov.addEventListener('keydown', e => { if (e.key === 'Escape' && !document.querySelector('.overlay.picker')) closeModal(); if (e.key === 'Enter' && e.target.tagName === 'INPUT') save.click(); });
   document.body.append(ov); paint(); setTimeout(() => amount.focus(), 50);
@@ -930,14 +1031,19 @@ Object.assign(WSPEC, {
     post: (rec, st, src) => { const old = src ? src.lastFetchedPrice : null; if (rec.lastFetchedPrice != null && rec.lastFetchedPrice !== old) rec.lastFetchedAt = Date.now(); if (rec.lastFetchedPrice == null) rec.lastFetchedAt = null; },
     make: () => ({ accountName: '', stockSymbol: '', exchangeCode: 'NSE', unitsHeld: '', avgBuyPrice: '', lastFetchedPrice: null, lastFetchedAt: null, isArchived: false }) },
   hold: { arr: 'brokerHoldings', nameKey: 'name', idOf: x => (x.name || '') + (x.broker ? ' (' + x.broker + ')' : ''), noun: 'holding', fields: [
-      F.pick('broker', 'Broker / platform', 'broker', { req: 1 }), F.text('accountId', 'Client ID / account (optional)', { ph: 'e.g. your Kite client ID' }),
+      F.pick('broker', 'Broker / platform', 'broker', { req: 1 }), F.pick('accountId', 'Client ID / account (optional)', 'clientid'),
       F.chips('kind', 'Type', KINDS), F.text('name', 'Name or symbol', { req: 1, ph: 'e.g. TCS, NIFTYBEES or Parag Parikh Flexi Cap' }),
       F.chips('plan', 'Plan', [['', 'Not set'], ['Direct', 'Direct'], ['Regular', 'Regular']], { show: s => s.kind === 'MF' }), F.chips('option', 'Option', [['', 'Not set'], ['Growth', 'Growth'], ['IDCW', 'IDCW'], ['Bonus', 'Bonus']], { show: s => s.kind === 'MF' }),
       F.text('isin', 'ISIN (optional)'), F.text('amfi', 'AMFI scheme code (optional)', { show: s => s.kind === 'MF' }), F.text('folio', 'Folio no. (optional)', { show: s => s.kind === 'MF' }),
       F.num('units', 'Quantity / units', { req: 1, min: 0.0001 }), F.num('avgPrice', 'Average buy price per unit', { req: 1, zero: 1, rs: 1 }),
-      F.num('price', 'Latest price / NAV (update now and then)', { nullable: 1, rs: 1 }) ],
-    post: (rec, st, src) => { const old = src ? src.price : null; if (rec.price != null && rec.price !== old) rec.priceDate = Date.now(); if (rec.price == null) rec.priceDate = null; rec.isin = (rec.isin || '').trim().toUpperCase(); if (rec.kind !== 'MF') { rec.plan = ''; rec.option = ''; rec.amfi = ''; rec.folio = ''; } },
-    make: () => ({ broker: '', accountId: '', kind: 'STOCK', plan: '', option: '', amfi: '', folio: '', name: '', isin: '', units: '', avgPrice: '', price: null, priceDate: null, tag: '', isArchived: false }) },
+      F.num('price', 'Latest price / NAV (update now and then)', { nullable: 1, rs: 1 }),
+      F.num('_sipAmt', 'Monthly SIP amount (optional)', { nullable: 1, rs: 1, show: s => s.kind === 'MF' }), F.date('_sipStart', 'SIP first date (if you set a SIP)', { opt: 1, show: s => s.kind === 'MF' }),
+      F.chips('_sipHeld', 'SIP status', [['false', 'Running'], ['true', 'Held (paused)']], { show: s => s.kind === 'MF' }) ],
+    pre: st => { st._sipAmt = st.sip ? String(st.sip.sipAmount) : ''; st._sipStart = st.sip ? st.sip.startDate : null; st._sipHeld = String(!!(st.sip && st.sip.isHeld)); },
+    check: rec => rec.kind === 'MF' && rec._sipAmt != null && rec._sipAmt > 0 && !rec._sipStart ? 'Choose the SIP first date (the day of month it is taken).' : '',
+    post: (rec, st, src) => { if (rec.kind === 'MF' && rec._sipAmt > 0) rec.sip = { ...((src && src.sip) || {}), sipAmount: rec._sipAmt, startDate: rec._sipStart, isHeld: rec._sipHeld === 'true', lastConfirmedDate: (src && src.sip && src.sip.lastConfirmedDate) || null }; else rec.sip = null; delete rec._sipAmt; delete rec._sipStart; delete rec._sipHeld; if (!rec.entries) rec.entries = (src && src.entries) || [];
+      const old = src ? src.price : null; if (rec.price != null && rec.price !== old) rec.priceDate = Date.now(); if (rec.price == null) rec.priceDate = null; rec.isin = (rec.isin || '').trim().toUpperCase(); if (rec.kind !== 'MF') { rec.plan = ''; rec.option = ''; rec.amfi = ''; rec.folio = ''; } },
+    make: () => ({ broker: '', accountId: '', sip: null, entries: [], kind: 'STOCK', plan: '', option: '', amfi: '', folio: '', name: '', isin: '', units: '', avgPrice: '', price: null, priceDate: null, tag: '', isArchived: false }) },
   insurance: { arr: 'insurancePolicies', nameKey: 'policyName', noun: 'insurance policy', fields: [
       F.text('policyName', 'Policy name', { req: 1, ph: 'e.g. HDFC Term Plan' }), F.pick('insurerName', 'Insurance company', 'insurer', { req: 1 }), F.text('policyNumber', 'Policy no. (optional)'),
       F.chips('policyType', 'Type', [['TERM', 'Term'], ['HEALTH', 'Health'], ['ENDOWMENT', 'Endowment'], ['MONEY_BACK', 'Money back'], ['ULIP', 'ULIP']]),
@@ -993,11 +1099,12 @@ Object.assign(WSPEC, {
       F.num('outstandingBalance', 'Amount still to pay', { req: 1, rs: 1, zero: 1 }),
       F.date('dueDate', 'Pay by (optional)', { opt: 1 }),
       F.chips('repeatsMonthly', 'Repeats every month?', [['false', 'No (one bill)'], ['true', 'Yes, same day each month']]),
-      { k: '_rnote', t: 'note', text: s => s.repeatsMonthly === 'true' ? 'After you mark a bill paid, the pay-by date moves to the same day next month and you are reminded again. Update the amount when the new bill arrives.' : '' } ],
+      F.num('repeatMonthsLeft', 'Number of EMIs / months to repeat (optional)', { nullable: 1, int: 1, min: 1, show: s => s.repeatsMonthly === 'true' }),
+      { k: '_rnote', t: 'note', text: s => s.repeatsMonthly === 'true' ? 'After you mark a bill paid, the pay-by date moves to the same day next month and you are reminded again. Update the amount when the new bill arrives. With a number, the repeat stops by itself after that many payments; leave it empty to repeat until you stop it.' : '' } ],
     pre: st => { st.repeatsMonthly = String(!!st.repeatsMonthly); },
     check: rec => rec.repeatsMonthly === 'true' && !rec.dueDate ? 'Choose the pay-by date first; the reminder repeats on the same day every month.' : '',
-    post: (rec, st, src) => { rec.repeatsMonthly = rec.repeatsMonthly === 'true'; rec.liabilityType = 'CREDIT_CARD'; if (!(+rec.emiAmount > 0)) { rec.principalAmount = rec.outstandingBalance; rec.interestRate = 0; rec.tenureMonths = 0; rec.emiAmount = 0; } rec.startDate = rec.startDate || (src ? src.startDate : Date.now()); rec.dueDate = rec.dueDate || null; },
-    make: () => ({ name: '', liabilityType: 'CREDIT_CARD', repeatsMonthly: false, principalAmount: 0, interestRate: 0, tenureMonths: 0, emiAmount: 0, startDate: Date.now(), outstandingBalance: '', dueDate: null, isArchived: false }) },
+    post: (rec, st, src) => { rec.repeatsMonthly = rec.repeatsMonthly === 'true'; if (!rec.repeatsMonthly || !(rec.repeatMonthsLeft > 0)) rec.repeatMonthsLeft = null; rec.liabilityType = 'CREDIT_CARD'; if (!(+rec.emiAmount > 0)) { rec.principalAmount = rec.outstandingBalance; rec.interestRate = 0; rec.tenureMonths = 0; rec.emiAmount = 0; } rec.startDate = rec.startDate || (src ? src.startDate : Date.now()); rec.dueDate = rec.dueDate || null; },
+    make: () => ({ name: '', liabilityType: 'CREDIT_CARD', repeatsMonthly: false, repeatMonthsLeft: null, principalAmount: 0, interestRate: 0, tenureMonths: 0, emiAmount: 0, startDate: Date.now(), outstandingBalance: '', dueDate: null, isArchived: false }) },
   loan: { arr: 'loans', nameKey: 'name', noun: 'loan', fields: [
       F.text('name', 'Name', { req: 1, ph: 'e.g. Home loan' }), F.text('lenderName', 'Lender (optional)', { ph: 'e.g. SBI' }),
       F.pick('lenderName', 'Lender (optional)', 'bank'),
@@ -1062,7 +1169,7 @@ function openBankPicker(cur, names, onPick, kind = 'bank') {
   const paint = () => {
     const raw = q.value.trim(), t = raw.toLowerCase(), m = all.filter(n => !t || n.toLowerCase().includes(t));
     const rows = m.map(n => h('button', { type: 'button', role: 'option', class: 'bopt' + (sameName(n, cur) ? ' on' : ''), onclick: () => done(n, false) }, n, sameName(n, cur) ? ' ✓' : ''));
-    if (raw && !all.some(n => sameName(n, raw))) { const addRow = h('button', { type: 'button', class: 'bopt add', onclick: () => done(nice(raw), true) }, '+ Add “' + nice(raw) + '” as a new ' + lab); if (rows.length) rows.push(addRow); else rows.unshift(addRow); }
+    if (raw && !all.some(n => sameName(n, raw))) { const addRow = h('button', { type: 'button', class: 'bopt add', onclick: () => done(kind === 'clientid' ? raw : nice(raw), true) }, '+ Add “' + (kind === 'clientid' ? raw : nice(raw)) + '” as a new ' + lab); if (rows.length) rows.push(addRow); else rows.unshift(addRow); }
     
     list.replaceChildren(...rows);
   };
@@ -1093,6 +1200,11 @@ function openWealth(key, it, preset) {
   const inputs = ent ? (ent.inputs || [{ k: 'amt', label: ent.amtLabel || 'Amount' }]) : [];
   const ne = { date: dstr(Date.now()), vals: {}, type: ent && ent.types ? ent.types[0][0] : null, mode: ent && ent.mode ? ent.mode.opts[0][0] : null };
   const newPicks = [];
+  const gType = key === 'hold' ? null : (Object.entries(GOAL_MAP).find(([, v]) => v === key) || [])[0] || null;
+  const canGoal = !!gType || key === 'hold';
+  const gl = { sel: '', name: '', target: '' };
+  if (isEdit && canGoal) { const t0 = key === 'hold' ? (src.kind === 'MF' ? 'MUTUAL_FUND' : 'DEMAT') : gType, g0 = (book.goals || []).find(g => !g.isArchived && (g.linkedAssets || []).some(l => l.type === t0 && l.name === origName)); if (g0) gl.sel = g0.name; }
+  const gl0 = gl.sel;
   sheetForm((isEdit ? 'Edit ' : 'Add ') + spec.noun, api => {
     const fieldsBox = h('div', null), entBox = h('div', null), extraBox = h('div', null);
     const autoOf = o => (spec.autoName || []).map(k => String(o[k] == null ? '' : o[k]).trim()).filter(Boolean).join(' ');
@@ -1166,19 +1278,38 @@ function openWealth(key, it, preset) {
       if (!spec.noNW) rec.excludeFromNetWorth = !!st.excludeFromNetWorth;
       if (spec.check) { const m = spec.check(rec, st, src, isEdit); if (m) return api.fail(m); }
       if (spec.post) spec.post(rec, st, src);
+      if (canGoal && gl.sel === '__new') { if (!gl.name.trim()) return api.fail('Enter the name of the new goal.'); if (!(parseFloat(String(gl.target).replace(/,/g, '')) > 0)) return api.fail('Enter the target amount of the new goal.'); if ((book.goals || []).some(g => !g.isArchived && sameName(g.name, gl.name.trim()))) return api.fail('A goal with that name already exists. Pick it from the list.'); }
       api.run(save, 'Saving…', () => mutateWealth((b, d) => {
         newPicks.forEach(({ kind, name }) => { d.customLists = d.customLists || {}; d.customLists[kind] = d.customLists[kind] || []; if (!optionList(kind, d).some(x => sameName(x, name))) d.customLists[kind].push(name); });
         b[spec.arr] = b[spec.arr] || []; let tgt;
         if (isEdit) { tgt = b[spec.arr][idx0]; if (!tgt || idOf(tgt) !== origName || tgt.isArchived) tgt = b[spec.arr].find(x => idOf(x) === origName && !x.isArchived); if (!tgt) throw new Error('This item was changed or removed on another device.'); }
         else { tgt = spec.make(); b[spec.arr].push(tgt); }
         Object.assign(tgt, rec);
+        if (canGoal && (gl.sel !== gl0 || (isEdit && origName !== idOf(tgt)))) {
+          const ty = key === 'hold' ? (tgt.kind === 'MF' ? 'MUTUAL_FUND' : 'DEMAT') : gType, nm = key === 'hold' ? tgt.name : idOf(tgt); b.goals = b.goals || [];
+          b.goals.forEach(g => { g.linkedAssets = (g.linkedAssets || []).filter(l => !(l.type === ty && (l.name === origName || l.name === nm))); });
+          let g = null;
+          if (gl.sel === '__new') { g = { name: gl.name.trim(), targetAmount: Math.round(parseFloat(String(gl.target).replace(/,/g, '')) * 100) / 100, targetDate: null, linkedAssets: [], isArchived: false }; b.goals.push(g); }
+          else if (gl.sel) g = b.goals.find(x => !x.isArchived && x.name === gl.sel);
+          if (g) g.linkedAssets.push({ type: ty, name: nm });
+        }
       })).then(ok => ok && toast(isEdit ? 'Saved ✓' : 'Added ✓'));
     };
     const extra = [];
     if (isEdit) { const del = h('button', { type: 'button', class: 'btn danger' }, 'Delete');
       del.onclick = () => { if (!confirm('Delete “' + origName + '”? It leaves your Net Worth, but you can bring it back from Settings > Recently deleted.')) return;
         api.run(del, 'Deleting…', () => mutateWealth(b => { const a = b[spec.arr] || []; let i = a[idx0] && idOf(a[idx0]) === origName && !a[idx0].isArchived ? idx0 : a.findIndex(x => idOf(x) === origName && !x.isArchived); if (i < 0) throw new Error('This item was already removed.'); a[i].isArchived = true; a[i].deletedAt = Date.now(); })).then(ok => ok && toast('Deleted · restore it from Settings')); }; extra.push(del); }
-    return h('div', null, fieldsBox, extraBox, entBox, spec.noNW ? null : toggleRow('Count in Net Worth', () => !st.excludeFromNetWorth, v => { st.excludeFromNetWorth = !v; }), h('div', { class: 'actions' }, save, extra));
+    const goalBox = h('div', null);
+    const paintGoal = () => {
+      const goals = (book.goals || []).filter(g => !g.isArchived);
+      const sel = h('select', { 'aria-label': 'Goal', onchange: e => { gl.sel = e.target.value; paintGoal(); } }, h('option', { value: '' }, 'No goal'),
+        goals.map(g => h('option', { value: g.name, selected: gl.sel === g.name }, g.name)), h('option', { value: '__new', selected: gl.sel === '__new' }, '+ New goal…'));
+      goalBox.replaceChildren(h('div', { class: 'flbl' }, 'Link to a goal (optional)'), sel,
+        gl.sel === '__new' ? h('div', { class: 'two' }, h('input', { type: 'text', placeholder: 'Goal name', value: gl.name, 'aria-label': 'New goal name', autocomplete: 'off', oninput: e => { gl.name = e.target.value; } }),
+          h('input', { type: 'text', inputmode: 'decimal', placeholder: 'Target amount', value: gl.target, 'aria-label': 'New goal target', autocomplete: 'off', oninput: e => { gl.target = e.target.value; } })) : null);
+    };
+    if (canGoal) paintGoal();
+    return h('div', null, fieldsBox, extraBox, entBox, canGoal ? goalBox : null, spec.noNW ? null : toggleRow('Count in Net Worth', () => !st.excludeFromNetWorth, v => { st.excludeFromNetWorth = !v; }), h('div', { class: 'actions' }, save, extra));
   });
 }
 function openCash() {
@@ -1191,6 +1322,16 @@ function openCash() {
     return h('div', null, h('div', { class: 'flbl' }, 'Amount of cash you have'), amt, toggleRow('Count in Net Worth', () => !st.ex, v => { st.ex = !v; }), h('div', { class: 'actions' }, save));
   });
 }
+// "Owed to me" (I paid for someone) and "I owe" (someone paid for me): tied to the entry, settled with Mark as paid (no new accounting entry)
+function settleBox(c) {
+  const sum = a => a.reduce((x, t) => x + t.amount, 0), ed = canEdit();
+  const tile = (t, kind) => h('div', { class: 'item acc' + (ed ? ' clk' : ''), 'data-deco': 'recv', style: { '--acc': kind === 'I_OWE' ? '#EF4444' : '#22C55E' }, role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openEntry(t) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openEntry(t); } : null },
+    h('div', { class: 'irow' }, h('div', { class: 'iname' }, t.settle.person), h('div', { class: 'ival' }, money(t.amount))),
+    h('div', { class: 'isub' }, [(c.cat[t.categoryLocalId] || {}).name, t.note, fmtDate(t.occurredAt)].filter(Boolean).join(' · ')), ed ? h('div', { class: 'iline dim' }, 'Tap to open the entry and mark it paid') : null);
+  const blk = (title, list, kind, extra) => list.length || (extra && extra.length) ? h('div', null, h('h2', null, title + ' · ' + money(sum(list) + (extra || []).reduce((x, r) => x + r.amount, 0))), h('div', { class: 'list' }, list.map(t => tile(t, kind)),
+    (extra || []).map(r => h('div', { class: 'item' }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.personName), h('div', { class: 'ival' }, money(r.amount))), r.note ? h('div', { class: 'isub' }, r.note) : null)))) : null;
+  return h('div', null, blk('Owed to me', c.owedTx, 'OWED_TO_ME', c.owed), blk('I owe', c.oweTx, 'I_OWE'));
+}
 function pageExpenseDashboard() {
   const c = computed(), book = currentBook();
   const dn = dueRules(book).length;
@@ -1200,25 +1341,23 @@ function pageExpenseDashboard() {
   const go = d => h('button', { class: 'mnav', 'aria-label': d < 0 ? 'Previous month' : 'Next month', disabled: d < 0 ? em <= minOff : em >= 0, onclick: () => { em = Math.max(minOff, Math.min(0, em + d)); route(); } }, d < 0 ? '‹' : '›');
   return h('div', null, bookHeader('Home', book.name), backupBanner(), installHint(), dn && canEdit() ? h('a', { class: 'banner', href: '#/recurring' }, h('b', null, dn + ' repeating entr' + (dn > 1 ? 'ies are' : 'y is') + ' due.'), ' Tap to review and record.') : null,
     h('div', { class: 'monthbar' }, go(-1), h('div', { class: 'mlabel' }, ml, cur ? '' : h('button', { class: 'link', onclick: () => { em = 0; route(); } }, 'Back to this month')), go(1)),
+    h('div', { class: 'toprow' },
     h('section', { class: 'card hero' }, h('div', { class: 'lbl' }, cur ? 'This month spent' : ml + ' spent'), h('div', { class: 'big' }, money(c.month)),
       h('div', { class: 'hsub' }, cur ? h('span', null, 'Today ', h('b', { class: 'down' }, money(c.today))) : null, h('span', null, (cur ? 'Income this month ' : 'Income '), h('b', { class: 'up' }, money(c.monthIncome))))),
+    h('section', { class: 'card' }, h('div', { class: 'lbl' }, cur ? 'Spending by category (this month)' : 'Spending by category (' + ml + ')'),
+      !c.topCats.length ? h('p', { class: 'small' }, cur ? 'Nothing spent yet this month.' : 'No spending recorded in ' + ml + '.') : null,
+      c.topCats.slice(0, 8).map(x => {
+        const pctw = c.month > 0 ? x.spent / c.month * 100 : 0;
+        const col = x.cat ? catColors(c)[x.cat.localId] : 'var(--mut)';
+        return h('div', { class: 'catrow' }, h('div', { class: 'irow' }, h('span', null, h('span', { class: 'sw', style: { background: col } }), x.cat ? x.cat.name : 'Uncategorised'), h('b', null, money(x.spent))), h('div', { class: 'bar' }, h('span', { style: { width: pctw + '%', background: col } })));
+      }))),
     h('h2', null, 'Accounts'),
     h('div', { class: 'grid' }, c.accounts.map(a => h('div', { class: 'tile' }, h('div', { class: 'tile-top' }, h('span', { class: 'tname' }, niceName(a.name)), accType(a) ? h('span', { class: 'tnote' }, accType(a)) : null),
       h('div', { class: 'tval' + (a.balance < 0 ? ' down' : '') }, money(a.balance)), duePill(a, c)))),
-    h('h2', null, cur ? 'Spending by category (this month)' : 'Spending by category (' + ml + ')'),
-    !c.topCats.length ? h('section', { class: 'card empty' }, h('p', null, cur ? 'Nothing spent yet this month.' : 'No spending recorded in ' + ml + '.')) : null,
-    c.topCats.length ? h('div', null,  h('section', { class: 'card' }, c.topCats.slice(0, 8).map(x => {
-      const pctw = c.month > 0 ? x.spent / c.month * 100 : 0;
-      const col = x.cat ? catColors(c)[x.cat.localId] : 'var(--mut)';
-      return h('div', { class: 'catrow' }, h('div', { class: 'irow' }, h('span', null, h('span', { class: 'sw', style: { background: col } }), x.cat ? x.cat.name : 'Uncategorised'), h('b', null, money(x.spent))), h('div', { class: 'bar' }, h('span', { style: { width: pctw + '%', background: col } })));
-    }))) : null,
-    cur && c.upcoming.length ? h('div', null, h('h2', null, 'Upcoming (next 7 days)'), h('div', { class: 'list' }, c.upcoming.map(r => h('div', { class: 'item' },
-      h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.name), h('div', { class: 'ival' }, money(r.amount))),
-      h('div', { class: 'isub' }, `${r.type.toLowerCase()} · ${fmtDate(r.nextRunAt)}${r.nextRunAt < Date.now() ? ' · due' : ''}`))))) : null,
-    cur && c.owed.length ? h('div', null, h('h2', null, 'Money owed to you'), h('div', { class: 'list' }, c.owed.map(r => h('div', { class: 'item' },
-      h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.personName), h('div', { class: 'ival' }, money(r.amount))), r.note ? h('div', { class: 'isub' }, r.note) : null)))) : null,
+    cur ? settleBox(c) : null,
     h('h2', null, 'Recent entries'),
-    h('section', { class: 'card' }, c.txs.slice(0, 10).map(t => txRow(t, c)), c.txs.length ? h('a', { href: '#/transactions', class: 'btn ghost' }, 'See all entries') : h('p', null, canEdit() ? 'No entries yet. Tap the + button to add your first one.' : 'No entries yet.')));
+    h('section', { class: 'card' }, c.txs.slice(0, 10).map(t => txRow(t, c)), c.txs.length ? h('a', { href: '#/transactions', class: 'btn ghost' }, 'See all entries') : h('p', null, canEdit() ? 'No entries yet. Tap the + button to add your first one.' : 'No entries yet.')),
+    comingUp(book));
 }
 
 const ef = { q: '', type: 'ALL', month: 'ALL', cat: 'ALL', acc: 'ALL', limit: 100 };
@@ -1379,6 +1518,7 @@ function openRule(r) {
 
 
 // ---------- Wealth: repeating items (RD, EPF, APY, NPS, SIP, Kametti, Rent) ----------
+const rKey = it => it.arr === 'brokerHoldings' ? 'hold' : R_KEY[it.type] === 'liability' && isCard({ src: it.ref }) ? 'card' : R_KEY[it.type];
 const R_KEY = { FDMAT: 'fd', RDMAT: 'rd', PPF: 'ppf', LIAB: 'liability', INS: 'insurance', RD: 'rd', EPF_EE: 'epf', EPF_PEN: 'epf', APY: 'apy', NPS: 'nps', SIP: 'mf', KAMETTI: 'kametti', RENT: 'rent' };
 const wKey = (bn, it) => bn + '|W|' + it.type + '|' + it.id;
 const wDue = (book, ignoreSnooze) => { const sn = snoozes(), now = Date.now(); return allDue(book, now, S.data.rateHistory || []).filter(i => ignoreSnooze || !(sn[wKey(book.name, i)] > now)); };
@@ -1390,7 +1530,7 @@ function showWealthDue(ignoreSnooze) {
     let sn = '1d'; const sel = h('select', { 'aria-label': 'Remind me again in', onchange: e => { sn = e.target.value; } }, SNOOZES.map(([v, l]) => h('option', { value: v, selected: v === sn }, l)));
     const run = (btn, label, fn) => { btn.disabled = true; const old = btn.textContent; btn.textContent = '…'; fn().then(() => { toast(label); route(); showWealthDue(ignoreSnooze); }).catch(e => { api.fail(e.message + ' Nothing was changed.'); btn.disabled = false; btn.textContent = old; }); };
     const rows = list.map(it => {
-      const st = { amt: String(it.amount), nav: it.ref.lastFetchedNav != null ? String(it.ref.lastFetchedNav) : '', mode: 'TRANSFER', rate: String(it.rate ?? ''), months: String(it.tenure ?? ''), start: dstr(it.due) };
+      const st = { amt: String(it.amount), nav: (it.ref.lastFetchedNav ?? it.ref.price) != null && (it.ref.lastFetchedNav ?? it.ref.price) !== 0 ? String(it.ref.lastFetchedNav ?? it.ref.price) : '', mode: 'TRANSFER', rate: String(it.rate ?? ''), months: String(it.tenure ?? ''), start: dstr(it.due) };
       const inp = (label, key, mode) => h('input', { type: 'text', inputmode: mode || 'decimal', value: st[key], 'aria-label': label + ' for ' + it.name, autocomplete: 'off', oninput: e => { st[key] = e.target.value.replace(/,/g, ''); } });
       const fl = (label, ctl) => h('div', null, h('div', { class: 'flbl' }, label), ctl);
       const head = [h('div', { class: 'irow' }, h('div', { class: 'iname' }, it.name), h('div', { class: 'ival' }, it.type === 'LIAB' || it.type === 'INS' || it.type === 'PPF' || it.type === 'FDMAT' || it.type === 'RDMAT' ? money(it.amount) : money(it.amount))),
@@ -1426,7 +1566,7 @@ function pageWealthRecurring() {
   return h('div', null, bookHeader('Recurring', 'Instalments, SIPs and rent'),
     h('p', { class: 'small' }, 'Deposits and receipts that repeat every month. When one falls due, you confirm it here or in the pop-up. Set the monthly amount in the item itself (EPF, APY, NPS, SIP, Kametti, RD, Rent).'),
     ed && dueN ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => showWealthDue(true) }, 'Review ' + dueN + ' due now') : null,
-    items.length ? h('div', { class: 'list' }, items.map(it => h('div', { class: 'item' + (ed ? ' clk' : '') + (it.held ? ' paused' : ''), 'data-deco': R_KEY[it.type] === 'liability' && isCard({ src: it.ref }) ? 'card' : R_KEY[it.type], role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openWealth(R_KEY[it.type] === 'liability' && isCard({ src: it.ref }) ? 'card' : R_KEY[it.type], { src: it.ref }) : null },
+    items.length ? h('div', { class: 'list' }, items.map(it => h('div', { class: 'item' + (ed ? ' clk' : '') + (it.held ? ' paused' : ''), 'data-deco': it.arr === 'brokerHoldings' ? 'hold' : R_KEY[it.type] === 'liability' && isCard({ src: it.ref }) ? 'card' : R_KEY[it.type], role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openWealth(rKey(it), { src: it.ref }) : null },
       h('div', { class: 'irow' }, h('div', { class: 'iname' }, it.name, it.held ? h('span', { class: 'ttag' }, 'Held') : it.due ? h('span', { class: 'ttag down' }, 'Due') : null), h('div', { class: 'ival' }, money(it.amount))),
       h('div', { class: 'isub' }, RTYPES[it.type]), h('div', { class: 'iline' }, (it.due ? 'Due since ' + fmtDate(it.due) : 'Next: ' + fmtDate(it.next)) + (it.pend > 1 ? ' · ' + it.pend + ' pending' : ''))))) :
       h('p', { class: 'empty' }, 'Nothing repeats yet. Add a monthly amount to an EPF, APY, NPS, SIP, Kametti or RD, or add rented property.'));
@@ -1522,17 +1662,89 @@ function pageTrash() {
     h('p', { class: 'small' }, 'Deleted items are kept here, out of your totals, until you delete them forever. Restore puts them back as they were.' + (ed ? '' : ' Sign in to restore.')),
     bar, box);
 }
+// ---------- Backup (choose the books) and delete / restore a book ----------
+const bkey = b => b.name + '|' + b.bookType, btype = b => b.bookType === 'EXPENSE' ? 'Expense book' : 'Wealth book';
+function openBackup() {
+  const books = activeBooks(S.data), sel = new Set(books.map(bkey)); let prot = !!S.pw;
+  sheetForm('Download backup', api => {
+    const btn = h('button', { type: 'button', class: 'btn primary big' }, 'Download backup');
+    btn.onclick = async () => {
+      const picked = books.filter(b => sel.has(bkey(b))); if (!picked.length) return api.fail('Choose at least one book.');
+      const data = { ...S.data, books: picked }, all = picked.length === books.length, stamp = new Date().toISOString().slice(0, 10);
+      const nm = 'arthik-backup-' + stamp + (all ? '' : '-' + picked.map(b => b.name.replace(/[^A-Za-z0-9]+/g, '_')).join('+').slice(0, 40)) + (prot ? '' : '-unprotected') + '.json';
+      btn.disabled = true; try { download(nm, prot ? await encrypt(JSON.stringify(data), S.pw) : JSON.stringify(data, null, 2)); closeModal(); toast('Backup downloaded ✓ (' + picked.length + ' book' + (picked.length > 1 ? 's' : '') + ')'); } catch (e) { api.fail(e.message); btn.disabled = false; }
+    };
+    return h('div', null, h('p', { class: 'small' }, 'Choose which books go into this backup file.'),
+      books.map(b => toggleRow(b.name + ' · ' + btype(b), () => sel.has(bkey(b)), v => { v ? sel.add(bkey(b)) : sel.delete(bkey(b)); })),
+      h('div', { class: 'flbl' }, 'Protection'), chipRow([['p', 'Locked with my data password'], ['u', 'No password (anyone can read it)']], () => (prot ? 'p' : 'u'), v => { prot = v === 'p'; }),
+      h('div', { class: 'actions' }, btn));
+  });
+}
+function openDeleteBook(b) {
+  const st = { typed: '' };
+  sheetForm('Delete book', api => {
+    const btn = h('button', { type: 'button', class: 'btn danger big', disabled: true }, 'Delete this book');
+    const inp = h('input', { type: 'text', 'aria-label': 'Type the book name', placeholder: b.name, autocomplete: 'off', oninput: e => { st.typed = e.target.value; btn.disabled = st.typed.trim() !== b.name.trim(); } });
+    btn.onclick = () => api.run(btn, 'Deleting…', () => mutate(d => { const x = (d.books || []).find(y => bkey(y) === bkey(b) && !y.isArchived); if (!x) throw new Error('This book was not found any more.'); x.isArchived = true; x.deletedAt = Date.now(); S.bookIdx = 0; })).then(ok => ok && toast('Book deleted. You can restore it from Settings.'));
+    return h('div', null, h('p', null, h('b', null, b.name), ' (' + btype(b) + ') will be removed from every screen, including all its items and entries.'),
+      h('p', { class: 'small' }, 'It is kept inside your data file under "Deleted books" in Settings, so you can restore it, until you delete it forever. A backup first is a good idea.'),
+      h('button', { type: 'button', class: 'btn', onclick: () => openBackup() }, 'Download a backup first'),
+      h('div', { class: 'flbl' }, 'Type the book name to confirm'), inp, h('div', { class: 'actions' }, btn));
+  });
+}
+function booksCard() {
+  const act = activeBooks(S.data), gone = (S.data.books || []).filter(b => b.isArchived), ed = canEdit();
+  const forever = b => { if (!confirm('Delete “' + b.name + '” forever? All its data is lost and this cannot be undone.')) return; mutate(d => { d.books = (d.books || []).filter(y => !(bkey(y) === bkey(b) && y.isArchived)); }).then(() => { toast('Deleted forever'); route(); }).catch(e => toast(e.message + ' Nothing was changed.', true)); };
+  const restore = b => mutate(d => { const x = (d.books || []).find(y => bkey(y) === bkey(b) && y.isArchived); if (x) { x.isArchived = false; delete x.deletedAt; } }).then(() => { toast('Book restored ✓'); route(); }).catch(e => toast(e.message + ' Nothing was changed.', true));
+  return h('section', { class: 'card' }, h('h2', null, 'Books'),
+    h('div', { class: 'list' }, act.map(b => h('div', { class: 'brow2' }, h('span', null, h('b', null, b.name), ' · ', btype(b)), ed ? h('button', { class: 'btn danger', type: 'button', onclick: () => openDeleteBook(b) }, 'Delete') : null))),
+    gone.length ? h('div', null, h('div', { class: 'flbl' }, 'Deleted books'), gone.map(b => h('div', { class: 'brow2' }, h('span', null, b.name, ' · ', btype(b), b.deletedAt ? ' · deleted ' + fmtDate(b.deletedAt) : ''),
+      ed ? h('span', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: () => restore(b) }, 'Restore'), h('button', { class: 'btn danger', type: 'button', onclick: () => forever(b) }, 'Delete forever')) : null))) : null);
+}
+// ---------- Change the data password (re-saves the one Dropbox file; every device then needs the new password) ----------
+async function changePassword(oldPw, newPw) {
+  if (saving) throw new Error('Another save is still running. Try again in a moment.');
+  saving = true;
+  try {
+    const f = await dbx.download(); if (!f) throw new Error('The file was removed from Dropbox. Nothing was changed.');
+    const d = await decrypt(f.text, oldPw); if (!d.ok) throw new Error('The password was already changed on another device. Lock and unlock with the new password. Nothing was changed.');
+    const text = await encrypt(d.text, newPw);
+    let r; try { r = await dbx.upload(text, f.rev); } catch (e) { throw new Error(e.message === 'CONFLICT' ? 'The file changed on another device while saving. Try again. Nothing was changed.' : e.message); }
+    S.data = JSON.parse(d.text); S.pw = newPw; S.enc = text; S.rev = r.rev; S.modified = r.modified; cacheSave(); view.cache = null;
+  } finally { saving = false; }
+}
+function openChangePassword() {
+  const st = { backed: false, skip: false };
+  sheetForm('Change data password', api => {
+    const inp = (label, ph) => h('input', { type: 'password', 'aria-label': label, placeholder: ph || label, autocomplete: 'off' });
+    const cur = inp('Current password'), n1 = inp('New password', 'New password (at least 8 characters)'), n2 = inp('New password again');
+    const bk = h('button', { type: 'button', class: 'btn' }, 'Download a backup now (current password)'), go = h('button', { type: 'button', class: 'btn primary big', disabled: true }, 'Change password');
+    const ok = () => { go.disabled = !(st.backed || st.skip); };
+    bk.onclick = async () => { bk.disabled = true; try { download('arthik-backup-' + new Date().toISOString().slice(0, 10) + '-before-password-change.json', S.enc || await encrypt(JSON.stringify(S.data), S.pw)); st.backed = true; bk.textContent = 'Backup downloaded ✓'; ok(); } catch (e) { api.fail(e.message); } bk.disabled = false; };
+    go.onclick = () => {
+      if (cur.value !== S.pw) return api.fail('The current password is not correct.');
+      if (n1.value.length < 8) return api.fail('Choose a new password of at least 8 characters.');
+      if (n1.value !== n2.value) return api.fail('The two new passwords do not match.');
+      if (n1.value === cur.value) return api.fail('The new password is the same as the old one.');
+      api.run(go, 'Changing…', () => changePassword(cur.value, n1.value)).then(ok => ok && toast('Password changed ✓ Use the new one on every device.'));
+    };
+    return h('div', null, h('p', { class: 'small' }, 'This changes the password for your whole data file in Dropbox. Every device, including this one, will ask for the NEW password the next time it unlocks. Your Dropbox sign-in is not affected.'),
+      h('p', { class: 'warnbox' }, 'If you forget the new password, nobody can recover your data (not even me). Old backup files still open only with the password they were made with.'),
+      h('div', { class: 'flbl' }, 'Step 1: a backup first'), bk,
+      toggleRow('I already have a recent backup, skip', () => st.skip, v => { st.skip = v; ok(); }),
+      h('div', { class: 'flbl' }, 'Step 2: the passwords'), cur, n1, n2, h('div', { class: 'actions' }, go));
+  });
+}
 function pageSettings() {
   const ex = expenseBooks(S.data);
   return h('div', null, bookHeader('Settings', 'Arthik web ' + APP_VERSION + (canEdit() ? ' · editing on' : ' · view only')),
     h('section', { class: 'card' }, h('h2', null, 'Your data file'),
       h('p', null, 'Dropbox › Apps › Arthik › arthik-data.json'), h('p', { class: 'small' }, 'Last saved ' + (S.modified ? new Date(S.modified).toLocaleString('en-IN') : 'unknown') + (S.offline ? ' (offline copy)' : '')),
-      h('p', { class: 'small' }, 'The protected backup is locked with your data password, so no new password is asked. The unprotected copy has no password at all.'),
+      h('p', { class: 'small' }, 'Download backup lets you choose which books to include, and whether the file is locked with your data password.'),
       h('p', null, h('a', { class: 'btn', href: '#/trash' }, 'Recently deleted (' + (currentBook() ? trashItems(currentBook()).length : 0) + ')')),
       h('p', { class: 'small' }, `${wealthBooks(S.data).length} Wealth book(s) and ${ex.length} Expense book(s) in this file. Use the book picker at the top to switch.`),
-      h('div', { class: 'row' },
-        S.enc ? h('button', { class: 'btn', onclick: () => { if (confirm('This backup file is locked with your data password (the one you use to unlock Arthik). Nobody can open it without that password.\n\nDownload it now?')) download('arthik-backup-' + new Date().toISOString().slice(0, 10) + '.json', S.enc); } }, 'Download backup (locked with your password)') : null,
-        h('button', { class: 'btn', onclick: () => { if (confirm('This saves your data WITHOUT a password. Keep the file somewhere safe.')) download('arthik-backup-unprotected.json', JSON.stringify(S.data, null, 2)); } }, 'Download unprotected copy'))),
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: openBackup }, 'Download backup…'), canEdit() ? h('button', { class: 'btn', onclick: openChangePassword }, 'Change data password') : null)),
+    booksCard(),
     (currentBook() && currentBook().bookType === 'EXPENSE') ? h('section', { class: 'card' }, h('h2', null, 'Manage this book'), h('p', { class: 'small' }, canEdit() ? 'Add, rename, recolour or archive.' : 'Sign in to Dropbox to make changes.'), h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/accounts' }, 'Accounts'), h('a', { class: 'btn', href: '#/categories' }, 'Categories'), h('a', { class: 'btn', href: '#/budgets' }, 'Budgets'))) : null,
     !S.enc ? null : h('section', { class: 'card' }, h('h2', null, 'Replace data'), h('p', { class: 'small' }, 'Load a newer Android backup over this file.'), h('button', { class: 'btn', onclick: () => screenSetup(true) }, 'Replace from a backup file')),
     h('section', { class: 'card' }, h('h2', null, 'Appearance'), h('div', { class: 'row' },

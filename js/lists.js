@@ -50,12 +50,13 @@ const PFMS = [
   'Aditya Birla Sun Life Pension Fund', 'Tata Pension Fund', 'Axis Pension Fund', 'DSP Pension Fund',
 ];
 const LISTS = { bank: BANKS, insurer: INSURERS, broker: BROKERS, platform: PLATFORMS, pfm: PFMS };
-export const KIND_LABEL = { bank: 'bank', insurer: 'insurance company', broker: 'broker / demat account', platform: 'platform', pfm: 'pension fund manager' };
+export const KIND_LABEL = { bank: 'bank', insurer: 'insurance company', broker: 'broker / demat account', platform: 'platform', pfm: 'pension fund manager', clientid: 'client ID / account' };
 const norm = s => String(s || '').trim().toLowerCase();
 /** Standard list + the entries this user added, sorted, no duplicates. */
 export function optionList(kind, data) {
   const seen = new Map();
-  [...(LISTS[kind] || []), ...(((data && data.customLists) || {})[kind] || [])].forEach(n => { const k = norm(n); if (k && !seen.has(k)) seen.set(k, String(n).trim()); });
+  const derived = kind === 'clientid' ? ((data && data.books) || []).flatMap(b => (b.brokerHoldings || []).map(x => x.accountId)).filter(Boolean) : [];
+  [...(LISTS[kind] || []), ...derived, ...(((data && data.customLists) || {})[kind] || [])].forEach(n => { const k = norm(n); if (k && !seen.has(k)) seen.set(k, String(n).trim()); });
   return [...seen.values()].sort((a, b) => a.localeCompare(b));
 }
 export const sameName = (a, b) => norm(a) === norm(b);

@@ -55,6 +55,8 @@ export function recurringItems(book, now = Date.now()) {
     add({ type: 'NPS', arr: 'npsAccounts', ref: a, id: a.name, name: a.name, amount: a.monthlyContribution, due: now >= nx ? nx : null, next: nx, pend: now >= nx ? 1 : 0 }); });
   L(book.mutualFunds).forEach(f => { if (!f.sip || !(f.sip.sipAmount > 0)) return; const s = sipStatus(f, now);
     add({ type: 'SIP', arr: 'mutualFunds', ref: f, id: f.schemeName, name: f.schemeName, amount: f.sip.sipAmount, due: !f.sip.isHeld && s.pend.length ? s.pend[0] : null, next: s.next, pend: s.pend.length, held: !!f.sip.isHeld, needsNav: true }); });
+  L(book.brokerHoldings).forEach(f => { if (f.kind !== 'MF' || !f.sip || !(f.sip.sipAmount > 0)) return; const s = sipStatus(f, now);
+    add({ type: 'SIP', arr: 'brokerHoldings', ref: f, id: f.name + '|' + (f.broker || ''), name: f.name, amount: f.sip.sipAmount, due: !f.sip.isHeld && s.pend.length ? s.pend[0] : null, next: s.next, pend: s.pend.length, held: !!f.sip.isHeld, needsNav: true }); });
   L(book.kamettiAccounts).forEach(k => { const filled = new Set((k.entries || []).filter(e => !e.isWon).map(e => ymOf(e.entryDate))); const w = walk(k.recurringDepositDate || k.startDate, k.totalMonths, filled, now);
     add({ type: 'KAMETTI', arr: 'kamettiAccounts', ref: k, id: k.name, name: k.name, amount: k.monthlyAmount, due: w.due, next: w.next, pend: w.pend }); });
   (book.rentReceivables || []).filter(r => !r.isArchived).forEach(r => { const s = rentPending(r, now);
@@ -97,7 +99,7 @@ const ID_KEY = { rentReceivables: 'propertyName', mutualFunds: 'schemeName', ins
  *  opts: {amount, nav, mode, receivedDate, rate, months, start}; data = whole file (for rent -> Expense account and PPF rates). */
 export function confirmInBook(book, it, opts, now = Date.now(), data = null) {
   const idKey = ID_KEY[it.arr] || 'name';
-  const rec = (book[it.arr] || []).find(x => x[idKey] === it.id && !x.isArchived); if (!rec) throw new Error('“' + it.id + '” was removed on another device.');
+  const rec = (book[it.arr] || []).find(x => (it.arr === 'brokerHoldings' ? x.name + '|' + (x.broker || '') === it.id : x[idKey] === it.id) && !x.isArchived); if (!rec) throw new Error('“' + it.id + '” was removed on another device.');
   const mini = { [it.arr]: [rec] }, rh = (data && data.rateHistory) || [];
   const fresh = [...recurringItems(mini, now), ...eventItems(mini, now, rh)].find(x => x.type === it.type && x.id === it.id);
   if (!fresh || fresh.due !== it.due) throw new Error('This one was already recorded on another device.');
@@ -111,13 +113,16 @@ export function confirmInBook(book, it, opts, now = Date.now(), data = null) {
   else if (it.type === 'NPS') { rec.currentValue = money((rec.currentValue || 0) + amt); rec.lastContributionDate = due; rec.lastUpdatedAt = now; }
   else if (it.type === 'SIP') { const nav = Number(opts.nav); if (!(nav > 0)) throw new Error('Enter the NAV (price per unit) for this SIP.');
     (rec.entries = rec.entries || []).push({ investedAmount: amt, navAtPurchase: nav, unitsAllotted: Math.round(amt / nav * 1000) / 1000, purchaseDate: due, isSip: true });
-    rec.sip.lastConfirmedDate = now; rec.lastFetchedNav = nav; rec.lastFetchedAt = now; }
+    if (it.arr === 'brokerHoldings') { const u = Math.round(amt / nav * 1000) / 1000, oldU = +rec.units || 0, inv = oldU * (+rec.avgPrice || 0) + amt; rec.units = Math.round((oldU + u) * 1000) / 1000; rec.avgPrice = rec.units > 0 ? Math.round(inv / rec.units * 10000) / 10000 : 0; rec.price = nav; rec.priceDate = now; }
+    rec.sip.lastConfirmedDate = now; if (it.arr !== 'brokerHoldings') { rec.lastFetchedNav = nav; rec.lastFetchedAt = now; } }
   else if (it.type === 'RENT') { const rcv = opts.receivedDate || now; (rec.payments = rec.payments || []).push({ amount: amt, paymentMode: opts.mode || 'TRANSFER', dueDate: due, receivedDate: rcv, entryType: 'RENT' });
     rec.lastConfirmedAt = rcv; const ln = rec.linkedAccount;
     if (ln && data) { const eb = (data.books || []).find(b => b.bookType === 'EXPENSE' && !b.isArchived && b.name === ln.bookName), ac = eb && (eb.accounts || []).find(a => a.name === ln.accountName && !a.isArchived);
       if (ac) { eb.transactions = eb.transactions || []; eb.transactions.push({ localId: eb.transactions.reduce((m, x) => Math.max(m, x.localId || 0), 0) + 1, type: 'INCOME', amount: amt, accountLocalId: ac.localId, toAccountLocalId: null, categoryLocalId: null, note: 'Rent from ' + (rec.tenantName || rec.propertyName), occurredAt: rcv }); } } }
   else if (it.type === 'PPF') (rec.deposits = rec.deposits || []).push({ amount: amt, depositDate: due, type: 'INTEREST', note: 'Interest credited' });
-  else if (it.type === 'LIAB') { rec.outstandingBalance = 0; rec.dueDate = rec.repeatsMonthly ? addM(due, 1) : null; }
+  else if (it.type === 'LIAB') { rec.outstandingBalance = 0; const left = rec.repeatsMonthly && rec.repeatMonthsLeft > 0 ? rec.repeatMonthsLeft - 1 : null;
+    if (rec.repeatsMonthly && rec.repeatMonthsLeft > 0 && left <= 0) { rec.repeatsMonthly = false; rec.repeatMonthsLeft = null; rec.dueDate = null; }
+    else { rec.dueDate = rec.repeatsMonthly ? addM(due, 1) : null; if (rec.repeatsMonthly) rec.repeatMonthsLeft = left; } }
   else if (it.type === 'INS') { const step = { MONTHLY: 1, QUARTERLY: 3, ANNUALLY: 12 }[rec.premiumFrequency] || 12; const d = new Date(due); const day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + step); d.setDate(Math.min(day, dim(d.getFullYear(), d.getMonth()))); rec.nextDueDate = d.getTime(); }
   else if (it.type === 'FDMAT' || it.type === 'RDMAT') {
     const months = Math.round(Number(opts.months)), rate = Number(opts.rate), start = opts.start || due; if (!(months > 0)) throw new Error('Enter the new tenure in months.'); if (!(rate >= 0 && rate <= 100)) throw new Error('Enter the interest rate.');
