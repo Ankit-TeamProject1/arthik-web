@@ -30,6 +30,10 @@ export function expenseBooks(data) { return (data.books || []).filter(b => b.boo
 
 export function metalLabel(m) { return `${upper(m.metalType)} ${m.caratType} (${upper(m.form)})`; }
 
+const tenureText = (x) => { const tm = x.tenureMonths || 0, y = Math.floor(tm / 12), mo = tm % 12, d = x.tenureExtraDays || 0, p = [];
+  if (y) p.push(y + (y === 1 ? ' year' : ' years')); if (mo) p.push(mo + (mo === 1 ? ' month' : ' months')); if (d) p.push(d + (d === 1 ? ' day' : ' days')); return p.join(' ') || '0 days'; };
+const fyEndOf = (now) => { const d = new Date(now), y = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1; return new Date(y + 1, 2, 31, 23, 59, 0, 0).getTime(); };
+
 export function computeBook(book, rateHistory = [], now = Date.now()) {
   const rates = (inst) => rateHistory.filter(r => r.instrument === inst);
   const cats = {}; CATS.forEach(c => { cats[c.key] = { ...c, items: [], total: 0, cost: 0 }; });
@@ -42,8 +46,10 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
   live(book.fixedDeposits).forEach(x => {
     const liveV = fd.currentValue(x, now), mat = fd.maturityDate(x), matured = now >= mat;
     const value = matured ? liveV : x.principalAmount;
-    const lines = [`${x.interestRate}% · matures ${fmtDate(mat)}`];
+    const lines = [`${x.interestRate}% · ${tenureText(x)} · matures ${fmtDate(mat)}`];
     if (!matured) lines.push(`Accrued interest (not counted yet): ${money(Math.max(0, liveV - x.principalAmount))}`);
+    if (x.payoutMode === 'PAYOUT') { const yrs = (x.tenureMonths + (x.tenureExtraDays || 0) / 30.44) / 12; lines.push(`Total interest over the tenure (paid out): ${money(x.principalAmount * x.interestRate / 100 * yrs)} · principal back at maturity: ${money(x.principalAmount)}`); }
+    else { const mv = fd.maturityValue(x); lines.push(`${matured ? 'Matured' : 'At maturity'}: ${money(mv)} · total interest ${money(Math.max(0, mv - x.principalAmount))}`); }
     if (x.payoutMode === 'PAYOUT') lines.push(`Interest paid out ${x.payoutFrequency.toLowerCase()} · next ${fmtDate(fd.nextPayoutDue(x))} · ${money(fd.payoutAmount(x))}`);
     add('fd', { src: x, id: 'fd:' + x.name, name: x.name, sub: [x.kind, x.bankName].filter(Boolean).join(' · '), value, cost: x.principalAmount, lines, excluded: x.excludeFromNetWorth });
   });
@@ -56,7 +62,8 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
     const value = matured ? liveV : raw;
     add('rd', { src: x, name: x.name, sub: [x.bankName, `${money(x.monthlyInstallment)}/month`].filter(Boolean).join(' · '), value, cost: raw,
       lines: [`${x.interestRate}% · ${inst.length} instalments recorded · matures ${fmtDate(mat)}`,
-              ...(matured ? [] : [`Accrued interest (not counted yet): ${money(Math.max(0, liveV - raw))}`])], excluded: x.excludeFromNetWorth });
+              ...(matured ? [] : [`Accrued interest (not counted yet): ${money(Math.max(0, liveV - raw))}`]),
+              (() => { const mv = rd.maturityValue(x), dep = x.monthlyInstallment * x.tenureMonths; return `At maturity (if every instalment is paid): ${money(mv)} · total interest ${money(Math.max(0, mv - dep))}`; })()], excluded: x.excludeFromNetWorth });
   });
 
   live(book.ppfAccounts).forEach(x => {
@@ -65,7 +72,8 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
     const dep = all.filter(d => d.type !== 'INTEREST').map(d => [d.depositDate, d.amount]);
     const liveV = ppfEpfValue(dep, rates('PPF'), now);
     add('ppf', { src: x, name: x.name, sub: [x.bankOrPostOfficeName, x.accountNumber].filter(Boolean).join(' · '), value: principal, cost: sum(dep, d => d[1]),
-      lines: [`Opened ${fmtDate(x.accountOpenDate)} · ${all.length} entries`, `Interest not yet credited (not counted): ${money(Math.max(0, liveV - principal))}`], excluded: x.excludeFromNetWorth });
+      lines: [`Opened ${fmtDate(x.accountOpenDate)} · ${all.length} entries`, `Interest not yet credited (not counted): ${money(Math.max(0, liveV - principal))}`,
+      (() => { const fe = fyEndOf(now), v = ppfEpfValue(dep, rates('PPF'), fe); return `Estimated interest by year end (${fmtDate(fe)}): ${money(Math.max(0, v - principal))} · balance then ${money(v)}`; })()], excluded: x.excludeFromNetWorth });
   });
 
   live(book.epfAccounts).forEach(x => {
@@ -75,7 +83,8 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
     const eeP = sum(ee, c => c[1]);
     const liveV = ppfEpfValue(ee, rates('EPF'), now);
     add('epf', { src: x, name: x.name, sub: [x.companyName, x.uan ? 'UAN ' + x.uan : ''].filter(Boolean).join(' · '), value: eeP + pension, cost: eeP,
-      lines: [`Employee + employer ${money(eeP)} · Pension ${money(pension)}`, `Interest not yet credited (not counted): ${money(Math.max(0, liveV - eeP))}`], excluded: x.excludeFromNetWorth });
+      lines: [`Employee + employer ${money(eeP)} · Pension ${money(pension)}`, `Interest not yet credited (not counted): ${money(Math.max(0, liveV - eeP))}`,
+      (() => { const fe = fyEndOf(now), v = ppfEpfValue(ee, rates('EPF'), fe); return `Estimated interest by year end (${fmtDate(fe)}): ${money(Math.max(0, v - eeP))} · employee + employer balance then ${money(v)}`; })()], excluded: x.excludeFromNetWorth });
   });
 
   live(book.npsAccounts).forEach(x => add('nps', { src: x, name: x.name, sub: [`Tier ${x.tier}`, x.pfm].filter(Boolean).join(' · '), value: x.currentValue,
@@ -114,24 +123,24 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
   live(book.metalHoldings).forEach(x => add('metal', { src: x, name: metalLabel(x), sub: `${x.quantityGrams} g`, value: x.quantityGrams * (x.currentPricePerGram ?? 0),
     lines: [x.currentPricePerGram == null ? 'No price saved' : `${money(x.currentPricePerGram)} per gram`], excluded: x.excludeFromNetWorth }));
 
-  live(book.manualAssets).forEach(x => add('asset', { name: x.name, sub: x.assetType, value: x.currentValue, lines: [`Updated ${fmtDate(x.lastUpdatedByUserAt)}`], excluded: x.excludeFromNetWorth }));
+  live(book.manualAssets).forEach(x => add('asset', { src: x, name: x.name, sub: assetLabel(x.assetType), value: x.currentValue, lines: [`Updated ${fmtDate(x.lastUpdatedByUserAt)}`], excluded: x.excludeFromNetWorth }));
   live(book.bankBalances).forEach(x => add('bank', { src: x, name: x.bankName, sub: x.accountDetails, value: x.currentBalance, lines: [], excluded: x.excludeFromNetWorth }));
-  live(book.wealthReceivables).forEach(x => add('receivable', { name: x.personName, sub: x.note, value: x.currentAmount, lines: [`Updated ${fmtDate(x.lastUpdatedAt)}`], excluded: x.excludeFromNetWorth }));
+  live(book.wealthReceivables).forEach(x => add('receivable', { src: x, name: x.personName, sub: x.note, value: x.currentAmount, lines: [`Updated ${fmtDate(x.lastUpdatedAt)}`], excluded: x.excludeFromNetWorth }));
   live(book.kamettiAccounts).forEach(x => {
     const bal = sum(x.entries || [], e => e.amount);
-    add('kametti', { name: x.name, sub: `${money(x.monthlyAmount)}/month · ${x.totalMonths} months`, value: bal, lines: [`${(x.entries || []).length} entries`], excluded: x.excludeFromNetWorth });
+    add('kametti', { src: x, name: x.name, sub: `${money(x.monthlyAmount)}/month · ${x.totalMonths} months`, value: bal, lines: [`${(x.entries || []).length} entries`], excluded: x.excludeFromNetWorth });
   });
   add('cash', { name: 'Cash in hand', sub: '', value: Number(book.cashInHand || 0), lines: [], excluded: !!book.cashExcludedFromNetWorth });
 
   // Liabilities (manual) + loans (scheduled)
   const liabilities = [];
-  live(book.liabilities).forEach(x => liabilities.push({ kind: 'Liability', name: x.name, sub: x.liabilityType, value: x.outstandingBalance,
+  live(book.liabilities).forEach(x => liabilities.push({ key: 'liability', src: x, kind: 'Liability', name: x.name, sub: liabLabel(x.liabilityType), value: x.outstandingBalance,
     lines: x.emiAmount > 0 ? [`EMI ${money(x.emiAmount)}/month · ${x.interestRate}%`] : [x.dueDate ? `Pay by ${fmtDate(x.dueDate)} · no interest` : 'One payment · no interest'], excluded: !!x.excludeFromNetWorth }));
   live(book.loans).forEach(x => {
     const pays = x.payments || [];
     const next = pays.filter(p => !p.isPaid && !p.isPrepayment).sort((a, b) => a.installmentNumber - b.installmentNumber)[0];
     const outstanding = next ? next.openingBalance : (pays.length ? 0 : x.principal);
-    liabilities.push({ kind: 'Loan', name: x.name, sub: x.lenderName || 'Loan · EMI schedule', value: outstanding,
+    liabilities.push({ key: 'loan', src: x, kind: 'Loan', name: x.name, sub: x.lenderName || 'Loan · EMI schedule', value: outstanding,
       lines: [next ? `Next EMI ${money(next.emiAmount)} on ${fmtDate(next.dueDate)}` : 'All instalments paid', `${x.annualInterestRatePercent}% · ${x.tenureMonths} months`], excluded: !!x.excludeFromNetWorth });
   });
   const liabTotal = sum(liabilities.filter(l => !l.excluded), l => l.value);
@@ -142,7 +151,7 @@ export function computeBook(book, rateHistory = [], now = Date.now()) {
   return { cats: list, byKey: cats, assets, liabilities, liabTotal, netWorth: assets - liabTotal, rent, goals: goalProgress(book, cats, now) };
 }
 
-const GOAL_MAP = { FD: 'fd', RD: 'rd', DEMAT: 'demat', MUTUAL_FUND: 'mf', MANUAL_ASSET: 'asset', PPF: 'ppf', EPF: 'epf', NPS: 'nps', APY: 'apy',
+export const GOAL_MAP = { FD: 'fd', RD: 'rd', DEMAT: 'demat', MUTUAL_FUND: 'mf', MANUAL_ASSET: 'asset', PPF: 'ppf', EPF: 'epf', NPS: 'nps', APY: 'apy',
   INSURANCE: 'insurance', KAMETTI: 'kametti', BANK_BALANCE: 'bank', METAL: 'metal', WEALTH_RECEIVABLE: 'receivable' };
 
 function goalProgress(book, cats) {
@@ -155,7 +164,7 @@ function goalProgress(book, cats) {
       linked.push({ cat: cat.label, name: l.name, value: item.value });
       if (!item.excluded) current += item.value;
     });
-    return { name: g.name, target: g.targetAmount, targetDate: g.targetDate, current, linked, pct: g.targetAmount > 0 ? Math.min(100, current / g.targetAmount * 100) : 0 };
+    return { src: g, name: g.name, target: g.targetAmount, targetDate: g.targetDate, current, linked, pct: g.targetAmount > 0 ? Math.min(100, current / g.targetAmount * 100) : 0 };
   });
 }
 
@@ -219,3 +228,7 @@ export function computeExpense(book, now = Date.now()) {
   const owed = (book.expenseReceivables || []).filter(r => !r.isCollected);
   return { txs, acc, cat, accounts, rulesAll: book.recurringRules || [], today, month, monthIncome, budgets, topCats, upcoming, owed, total: accounts.reduce((s, a) => s + a.balance, 0) };
 }
+
+const _pretty = v => String(v || '').replace(/_/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase());
+export function assetLabel(v) { return _pretty(v); }
+export function liabLabel(v) { return _pretty(v); }

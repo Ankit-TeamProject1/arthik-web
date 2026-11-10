@@ -1,7 +1,9 @@
 import { APP_VERSION, AUTO_LOCK_MS } from './config.js';
 import * as dbx from './dropbox.js';
+import { optionList, sameName, KIND_LABEL } from './lists.js';
 import { encrypt, decrypt, isEncrypted } from './crypto.js';
-import { utcMonth, CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, setMask, money, pct, fmtDate, metalLabel } from './model.js';
+import { loanEmi, loanSchedule } from './calc.js';
+import { GOAL_MAP, assetLabel, utcMonth, CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, setMask, money, pct, fmtDate, metalLabel } from './model.js';
 
 const root = document.getElementById('app');
 const S = { pw: null, enc: null, rev: null, modified: null, data: null, bookIdx: 0, offline: false, error: '', busy: false };
@@ -13,7 +15,7 @@ function h(tag, attrs, ...kids) {
     if (v == null || v === false) continue;
     if (k === 'class') el.className = v;
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+    else if (k === 'style' && typeof v === 'object') { for (const [sk, sv] of Object.entries(v)) { if (sk.startsWith('--')) el.style.setProperty(sk, sv); else el.style[sk] = sv; } }
     else el.setAttribute(k, v === true ? '' : v);
   }
   kids.flat().forEach(c => { if (c == null || c === false) return; el.append(c.nodeType ? c : document.createTextNode(String(c))); });
@@ -212,7 +214,7 @@ function route() {
 addEventListener('hashchange', () => { if (S.data) route(); });
 // Laptop shortcuts: "/" search entries, "h" hide or show values, "g" then nothing else is needed.
 addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeModal();
+  if (e.key === 'Escape') { const pk = document.querySelector('.overlay.picker'); if (pk) pk.remove(); else closeModal(); }
   if (!S.data || e.ctrlKey || e.metaKey || e.altKey) return;
   const tag = (e.target && e.target.tagName || '').toLowerCase(); if (['input', 'select', 'textarea'].includes(tag)) return;
   const b = currentBook(); if (!b) return;
@@ -294,9 +296,10 @@ function pageDashboard() {
 
 function itemCard(it, key) {
   const ed = canEdit() && key && WSPEC[key] && it.src;
-  return h('div', { class: 'item' + (ed ? ' clk' : ''), role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openWealth(key, it) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openWealth(key, it); } : null },
+  const cdef = CATS.find(x => x.key === key);
+  return h('div', { class: 'item' + (cdef ? ' acc' : '') + (ed ? ' clk' : ''), style: cdef ? { '--acc': cdef.color } : null, role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openWealth(key, it) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openWealth(key, it); } : null },
     it.excluded ? h('div', { class: 'excl' }, 'Not in Net Worth') : null,
-    h('div', { class: 'irow' }, h('div', { class: 'iname' }, it.name), h('div', { class: 'ival' }, money(it.value))),
+    h('div', { class: 'irow' }, h('div', { class: 'iname' }, cdef ? h('img', { class: 'iill', src: 'icons/ill/' + cdef.ill + '.svg', alt: '', width: 36, height: 36 }) : null, it.name), h('div', { class: 'ival' }, money(it.value))),
     it.sub ? h('div', { class: 'isub' }, it.sub) : null,
     (it.lines || []).map(l => h('div', { class: 'iline' }, l)));
 }
@@ -315,13 +318,15 @@ function pageLiabilities() {
   const c = computed();
   return h('div', null, bookHeader('Liabilities', 'Loans and dues'),
     h('section', null, h('div', { class: 'lbl' }, 'Total outstanding'), h('div', { class: 'big2' }, money(c.liabTotal))),
-    c.liabilities.length ? h('div', { class: 'list' }, c.liabilities.sort((a, b) => b.value - a.value).map(l => itemCard({ ...l, sub: (l.kind === 'Loan' ? 'Loan · ' : '') + (l.sub || '') }))) : h('p', null, 'No liabilities. '));
+    canEdit() ? h('div', { class: 'row', style: { margin: '0 0 12px' } }, h('button', { class: 'btn primary', onclick: () => openWealth('liability', null) }, '+ Add liability'), h('button', { class: 'btn primary', onclick: () => openWealth('loan', null) }, '+ Add loan (EMI schedule)')) : null,
+    c.liabilities.length ? h('div', { class: 'list' }, c.liabilities.sort((a, b) => b.value - a.value).map(l => itemCard({ ...l, sub: (l.kind === 'Loan' ? 'Loan · ' : '') + (l.sub || '') }, l.key))) : h('p', { class: 'empty' }, 'No liabilities.'));
 }
 
 function pageGoals() {
   const c = computed();
   return h('div', null, bookHeader('Goals', 'Progress'),
-    c.goals.length ? h('div', { class: 'list' }, c.goals.map(g => h('div', { class: 'item' },
+    canEdit() ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => openWealth('goal', null) }, '+ Add goal') : null,
+    c.goals.length ? h('div', { class: 'list' }, c.goals.map(g => h('div', { class: 'item' + (canEdit() ? ' clk' : ''), role: canEdit() ? 'button' : null, tabindex: canEdit() ? 0 : null, onclick: canEdit() ? () => openWealth('goal', { src: g.src }) : null },
       h('div', { class: 'irow' }, h('div', { class: 'iname' }, g.name), h('div', { class: 'ival' }, g.pct.toFixed(0) + '%')),
       h('div', { class: 'bar', role: 'progressbar', 'aria-valuenow': g.pct.toFixed(0), 'aria-valuemin': 0, 'aria-valuemax': 100 }, h('span', { style: { width: g.pct + '%' } })),
       h('div', { class: 'iline' }, `${money(g.current)} of ${money(g.target)}${g.targetDate ? ' · by ' + fmtDate(g.targetDate) : ''}`),
@@ -331,9 +336,10 @@ function pageGoals() {
 function pageRent() {
   const c = computed();
   return h('div', null, bookHeader('Rent receivable', 'Tracking only — not in Net Worth'),
+    canEdit() ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => openWealth('rent', null) }, '+ Add rented property') : null,
     c.rent.length ? h('div', { class: 'list' }, c.rent.map(r => {
       const pays = (r.payments || []).filter(p => p.entryType === 'RENT').sort((a, b) => b.receivedDate - a.receivedDate);
-      return h('div', { class: 'item' }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.propertyName), h('div', { class: 'ival' }, money(r.monthlyRent) + '/mo')),
+      return h('div', { class: 'item' + (canEdit() ? ' clk' : ''), role: canEdit() ? 'button' : null, tabindex: canEdit() ? 0 : null, onclick: canEdit() ? () => openWealth('rent', { src: r }) : null }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.propertyName), h('div', { class: 'ival' }, money(r.monthlyRent) + '/mo')),
         h('div', { class: 'isub' }, [r.tenantName, r.tenantPhone].filter(Boolean).join(' · ')),
         h('div', { class: 'iline' }, `Shift date ${fmtDate(r.startDate)} · security deposit ${money(r.securityDeposit)}`),
         pays.slice(0, 3).map(p => h('div', { class: 'isub' }, `Received ${fmtDate(p.receivedDate)} · ${money(p.amount)} · ${p.paymentMode.toLowerCase()}`)));
@@ -505,7 +511,7 @@ function openEntry(t) {
     h('div', { class: 'two' }, h('div', null, h('div', { class: 'flbl' }, 'Date'), date), h('div', null, h('div', { class: 'flbl' }, 'Comment'), note)),
     msg, h('div', { class: 'actions' }, save, del));
   const ov = h('div', { class: 'overlay', onclick: e => { if (e.target === ov) closeModal(); } }, sheet);
-  ov.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); if (e.key === 'Enter' && e.target.tagName === 'INPUT') save.click(); });
+  ov.addEventListener('keydown', e => { if (e.key === 'Escape' && !document.querySelector('.overlay.picker')) closeModal(); if (e.key === 'Enter' && e.target.tagName === 'INPUT') save.click(); });
   document.body.append(ov); paint(); setTimeout(() => amount.focus(), 50);
 }
 
@@ -525,7 +531,7 @@ function sheetForm(title, build) {
   const sheet = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
     h('div', { class: 'sheethead' }, h('h2', null, title), h('button', { class: 'x', 'aria-label': 'Close', onclick: closeModal }, '×')), body, msg);
   const ov = h('div', { class: 'overlay', onclick: e => { if (e.target === ov) closeModal(); } }, sheet);
-  ov.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); if (e.key === 'Enter' && e.target.tagName === 'INPUT') { const sv = ov.querySelector('.btn.primary'); if (sv) sv.click(); } });
+  ov.addEventListener('keydown', e => { if (e.key === 'Escape' && !document.querySelector('.overlay.picker')) closeModal(); if (e.key === 'Enter' && e.target.tagName === 'INPUT') { const sv = ov.querySelector('.btn.primary'); if (sv) sv.click(); } });
   document.body.append(ov); setTimeout(() => { const i = ov.querySelector('input[type=text]'); if (i) i.focus(); }, 50);
 }
 const chipRow = (opts, get, set, colorOf) => { const box = h('div', { class: 'chips' });
@@ -680,54 +686,59 @@ function pageCategories() {
 // ---------- Phase 3: editing Wealth items (FD, RD, PPF, EPF, Bank, Cash) ----------
 const F = {  // field helpers
   text: (k, label, o = {}) => ({ k, label, t: 'text', ...o }), num: (k, label, o = {}) => ({ k, label, t: 'num', ...o }),
+  pick: (k, label, kind, o = {}) => ({ k, label, t: 'pick', kind, ...o }),
   date: (k, label, o = {}) => ({ k, label, t: 'date', ...o }), chips: (k, label, opts, o = {}) => ({ k, label, t: 'chips', opts, ...o }),
 };
 const COMPOUND = [['MONTHLY', 'Monthly'], ['QUARTERLY', 'Quarterly'], ['ANNUALLY', 'Yearly'], ['CUMULATIVE', 'At maturity']];
+const fdDays = s => ((+s._ty || 0) * 12 + (+s._tm || 0)) * 30.4375 + (+s._td || 0);
+const fdAutoWhy = s => s.payoutMode === 'PAYOUT' ? 'interest is paid out regularly, so it works as simple interest.' : (fdDays(s) > 0 && fdDays(s) < 180 ? 'a short FD (under 180 days) normally uses simple interest.' : 'a cumulative FD compounds, usually every quarter.');
+function fdAuto(s) { s.interestType = s.payoutMode === 'PAYOUT' || (fdDays(s) > 0 && fdDays(s) < 180) ? 'SIMPLE' : 'COMPOUND'; if (s.interestType === 'COMPOUND' && !['MONTHLY', 'QUARTERLY', 'ANNUALLY', 'CUMULATIVE'].includes(s.compoundingFrequency)) s.compoundingFrequency = 'QUARTERLY'; }
 const WSPEC = {
-  fd: { arr: 'fixedDeposits', nameKey: 'name', noun: 'FD / NSC', fields: [
-      F.chips('kind', 'Type', [['FD', 'Fixed Deposit'], ['NSC', 'NSC']]), F.text('name', 'Name', { req: 1, ph: 'e.g. HDFC FD 2026' }), F.text('bankName', 'Bank (optional)'), F.text('accountOrCertificateNumber', 'Account / certificate no. (optional)'),
+  fd: { auto: fdAuto, arr: 'fixedDeposits', nameKey: 'name', autoName: ['bankName', 'accountOrCertificateNumber'], autoHint: 'the bank name or the account / certificate number', noun: 'FD / NSC', fields: [
+      F.chips('kind', 'Type', [['FD', 'Fixed Deposit'], ['NSC', 'NSC']]), F.pick('bankName', 'Bank name', 'bank'), F.text('accountOrCertificateNumber', 'Account / certificate no.', { ph: 'e.g. 5010 or last 4 digits' }),
       F.num('principalAmount', 'Amount invested', { req: 1, min: 0.01, rs: 1 }), F.date('startDate', 'Start date', { req: 1 }), F.num('interestRate', 'Interest rate (% per year)', { req: 1 }),
-      F.num('tenureMonths', 'Tenure (months)', { req: 1, int: 1, min: 1 }), F.num('tenureExtraDays', 'Extra days (optional)', { int: 1, def: 0 }),
-      F.chips('interestType', 'Interest', [['COMPOUND', 'Compound'], ['SIMPLE', 'Simple']]),
+      { k: 'tenure', label: 'Tenure (fill any: years, months, days)', t: 'tenure' },
+      F.chips('payoutMode', 'Interest is', [['CUMULATIVE', 'Added to the deposit (cumulative)'], ['PAYOUT', 'Paid out to you regularly']]),
+      F.chips('interestType', 'Interest type', [['COMPOUND', 'Compound'], ['SIMPLE', 'Simple']], { show: s => s.payoutMode !== 'PAYOUT' }),
+      { k: '_note', t: 'note', text: s => s._auto ? 'Chosen for you: ' + fdAutoWhy(s) + ' You can change it.' : '' },
       F.chips('compoundingFrequency', 'Compounds', COMPOUND, { show: s => s.interestType === 'COMPOUND' && s.payoutMode !== 'PAYOUT' }),
-      F.chips('payoutMode', 'Interest is', [['CUMULATIVE', 'Added to the deposit'], ['PAYOUT', 'Paid out to you']]),
       F.chips('payoutFrequency', 'Paid out', COMPOUND.slice(0, 3), { show: s => s.payoutMode === 'PAYOUT' }),
       F.chips('autoRenewMode', 'On maturity', [['DISABLED', 'Do nothing'], ['PRINCIPAL_ONLY', 'Renew principal'], ['PRINCIPAL_PLUS_INTEREST', 'Renew with interest']]) ],
     make: () => ({ kind: 'FD', name: '', bankName: '', accountOrCertificateNumber: '', principalAmount: '', startDate: Date.now(), interestRate: '', tenureMonths: '', tenureExtraDays: 0, interestType: 'COMPOUND', compoundingFrequency: 'QUARTERLY', payoutMode: 'CUMULATIVE', payoutFrequency: 'MONTHLY', autoRenewMode: 'DISABLED', lastInterestPayoutAt: null, isArchived: false }) },
-  rd: { arr: 'recurringDeposits', nameKey: 'name', noun: 'RD', fields: [
-      F.text('name', 'Name', { req: 1, ph: 'e.g. Kotak RD' }), F.text('bankName', 'Bank (optional)'), F.text('accountOrCertificateNumber', 'Account no. (optional)'),
+  rd: { arr: 'recurringDeposits', nameKey: 'name', autoName: ['bankName', 'accountOrCertificateNumber'], autoHint: 'the bank name or the account number', noun: 'RD', fields: [
+      F.pick('bankName', 'Bank name', 'bank'), F.text('accountOrCertificateNumber', 'Account no.'),
       F.num('monthlyInstallment', 'Monthly instalment', { req: 1, min: 0.01, rs: 1 }), F.date('startDate', 'Start date', { req: 1 }), F.num('interestRate', 'Interest rate (% per year)', { req: 1 }),
       F.num('tenureMonths', 'Tenure (months)', { req: 1, int: 1, min: 1 }), F.chips('compoundingFrequency', 'Compounds', COMPOUND.slice(0, 3)),
       F.chips('autoRenewMode', 'On maturity', [['DISABLED', 'Do nothing'], ['PRINCIPAL_ONLY', 'Renew principal'], ['PRINCIPAL_PLUS_INTEREST', 'Renew with interest']]) ],
     entries: { key: 'installments', label: 'Instalments paid', dateKey: 'installmentDate', amtLabel: 'Amount', addLabel: 'Add instalment' },
     make: () => ({ name: '', bankName: '', accountOrCertificateNumber: '', monthlyInstallment: '', startDate: Date.now(), interestRate: '', tenureMonths: '', compoundingFrequency: 'QUARTERLY', autoRenewMode: 'DISABLED', installments: [], isArchived: false }) },
-  ppf: { arr: 'ppfAccounts', nameKey: 'name', noun: 'PPF account', fields: [
-      F.text('name', 'Name', { req: 1, ph: 'e.g. SBI PPF' }), F.text('bankOrPostOfficeName', 'Bank / post office (optional)'), F.text('accountNumber', 'Account no. (optional)'), F.date('accountOpenDate', 'Account opened on', { req: 1 }) ],
+  ppf: { arr: 'ppfAccounts', nameKey: 'name', autoName: ['bankOrPostOfficeName', 'accountNumber'], autoHint: 'the bank / post office name or the account number', noun: 'PPF account', fields: [
+      F.pick('bankOrPostOfficeName', 'Bank / post office name', 'bank'), F.text('accountNumber', 'Account no.'), F.date('accountOpenDate', 'Account opened on', { req: 1 }) ],
     entries: { key: 'deposits', label: 'Deposits, interest and withdrawals', dateKey: 'depositDate', amtLabel: 'Amount', addLabel: 'Add entry', typeKey: 'type', types: [['DEPOSIT', 'Deposit'], ['INTEREST', 'Interest credited'], ['DEDUCTION', 'Withdrawal']] },
     make: () => ({ name: '', bankOrPostOfficeName: '', accountNumber: '', accountOpenDate: Date.now(), deposits: [], isArchived: false }) },
-  epf: { arr: 'epfAccounts', nameKey: 'name', noun: 'EPF account', fields: [
-      F.text('name', 'Name', { req: 1, ph: 'e.g. Employer EPF' }), F.text('companyName', 'Company (optional)'), F.text('uan', 'UAN (optional)'), F.text('pfAccountNumber', 'PF account no. (optional)'), F.date('accountOpenDate', 'Account opened on', { req: 1 }) ],
+  epf: { arr: 'epfAccounts', nameKey: 'name', autoName: ['companyName', 'pfAccountNumber'], autoHint: 'the company name or the PF account number', noun: 'EPF account', fields: [
+      F.text('companyName', 'Company name', { ph: 'e.g. Acme Ltd' }), F.text('pfAccountNumber', 'PF account no.'), F.text('uan', 'UAN (optional)'), F.date('accountOpenDate', 'Account opened on', { req: 1 }) ],
     entries: { key: 'contributions', label: 'Contributions', dateKey: 'contributionDate', amtLabel: 'Amount', addLabel: 'Add contribution', typeKey: 'tileType', types: [['EMPLOYEE_EMPLOYER', 'Employee + employer'], ['PENSION', 'Pension']], extra: { isTransfer: false } },
     make: () => ({ name: '', companyName: '', uan: '', pfAccountNumber: '', accountOpenDate: Date.now(), monthlyEeContribution: null, monthlyPensionContribution: null, recurringDepositDate: null, contributions: [], isArchived: false }) },
   bank: { arr: 'bankBalances', nameKey: 'bankName', noun: 'bank balance', fields: [
-      F.text('bankName', 'Bank name', { req: 1, ph: 'e.g. HDFC Savings' }), F.text('accountDetails', 'Account details (optional)', { ph: 'e.g. xx1234' }), F.num('currentBalance', 'Current balance', { req: 1, rs: 1, zero: 1 }) ],
+      F.pick('bankName', 'Bank name', 'bank', { req: 1 }), F.text('accountDetails', 'Account details (optional)', { ph: 'e.g. xx1234' }), F.num('currentBalance', 'Current balance', { req: 1, rs: 1, zero: 1 }) ],
     make: () => ({ bankName: '', accountDetails: '', currentBalance: '', isArchived: false }) },
 };
 
 const FREQ3 = [['MONTHLY', 'Monthly'], ['QUARTERLY', 'Quarterly'], ['ANNUALLY', 'Yearly']];
 Object.assign(WSPEC, {
   nps: { arr: 'npsAccounts', nameKey: 'name', noun: 'NPS account', fields: [
-      F.text('name', 'Name', { req: 1, ph: 'e.g. NPS Tier 1' }), F.text('pran', 'PRAN (optional)'), F.text('pfm', 'Pension fund manager (optional)'), F.chips('tier', 'Tier', [[1, 'Tier 1'], [2, 'Tier 2']]),
+      F.text('name', 'Name', { req: 1, ph: 'e.g. NPS Tier 1' }), F.text('pran', 'PRAN (optional)'), F.pick('pfm', 'Pension fund manager (optional)', 'pfm'), F.chips('tier', 'Tier', [[1, 'Tier 1'], [2, 'Tier 2']]),
       F.num('currentValue', 'Current value', { req: 1, rs: 1, zero: 1 }), F.num('monthlyContribution', 'Monthly contribution (optional)', { nullable: 1 }) ],
     post: (rec, st, src) => { rec.lastUpdatedAt = Date.now(); },
     make: () => ({ name: '', pran: '', pfm: '', tier: 1, currentValue: '', lastUpdatedAt: Date.now(), monthlyContribution: null, recurringDayOfMonth: null, lastContributionDate: null, isArchived: false }) },
   apy: { arr: 'apyAccounts', nameKey: 'name', noun: 'APY account', fields: [
-      F.text('name', 'Name', { req: 1, ph: 'e.g. Atal Pension Yojana' }), F.text('pran', 'PRAN (optional)'), F.text('bankName', 'Bank (optional)'), F.text('accountNumber', 'Account no. (optional)'), F.text('ifsc', 'IFSC (optional)'),
+      F.text('name', 'Name', { req: 1, ph: 'e.g. Atal Pension Yojana' }), F.text('pran', 'PRAN (optional)'), F.pick('bankName', 'Bank (optional)', 'bank'), F.text('accountNumber', 'Account no. (optional)'), F.text('ifsc', 'IFSC (optional)'),
       F.num('monthlyContribution', 'Monthly contribution', { req: 1, min: 0.01, rs: 1 }), F.chips('pensionSlab', 'Pension per month', [1000, 2000, 3000, 4000, 5000].map(v => [v, '₹' + v])),
       F.date('startDate', 'Started on', { req: 1 }), F.num('totalContributedSoFar', 'Total contributed so far', { req: 1, rs: 1, zero: 1 }) ],
     make: () => ({ name: '', pran: '', bankName: '', accountNumber: '', ifsc: '', monthlyContribution: '', pensionSlab: 1000, startDate: Date.now(), totalContributedSoFar: '', lastContributionDate: null, recurringDayOfMonth: null, isArchived: false }) },
   mf: { arr: 'mutualFunds', nameKey: 'schemeName', noun: 'mutual fund', fields: [
-      F.text('schemeName', 'Fund name', { req: 1, ph: 'e.g. Parag Parikh Flexi Cap' }), F.text('fundHouse', 'Fund house (optional)'), F.text('platformName', 'Platform (optional)', { ph: 'e.g. Groww, Zerodha' }), F.text('folioNumber', 'Folio no. (optional)'), F.text('schemeCode', 'AMFI scheme code (optional)'),
+      F.text('schemeName', 'Fund name', { req: 1, ph: 'e.g. Parag Parikh Flexi Cap' }), F.text('fundHouse', 'Fund house (optional)'), F.pick('platformName', 'Platform (optional)', 'platform'), F.text('folioNumber', 'Folio no. (optional)'), F.text('schemeCode', 'AMFI scheme code (optional)'),
       F.num('lastFetchedNav', 'Latest NAV (update it now and then)', { nullable: 1 }) ],
     entries: { key: 'entries', label: 'Purchases', inputs: [{ k: 'invested', label: 'Amount invested' }, { k: 'nav', label: 'NAV on that day' }], addLabel: 'Add purchase', typeKey: 'isSip', boolType: 1, types: [['false', 'One-time'], ['true', 'SIP']],
       build: ne => { const inv = +ne.vals.invested, nav = +ne.vals.nav; if (!(inv > 0) || !(nav > 0)) return 'Enter the amount invested and the NAV (both above zero).';
@@ -736,12 +747,12 @@ Object.assign(WSPEC, {
     post: (rec, st, src) => { const old = src ? src.lastFetchedNav : null; if (rec.lastFetchedNav != null && rec.lastFetchedNav !== old) rec.lastFetchedAt = Date.now(); if (rec.lastFetchedNav == null) rec.lastFetchedAt = null; },
     make: () => ({ schemeCode: '', schemeName: '', folioNumber: '', fundHouse: '', platformName: '', lastFetchedNav: null, lastFetchedAt: null, entries: [], sip: null, isArchived: false }) },
   demat: { arr: 'dematHoldings', nameKey: 'stockSymbol', noun: 'share holding', fields: [
-      F.text('stockSymbol', 'Share / stock symbol', { req: 1, ph: 'e.g. TCS' }), F.chips('exchangeCode', 'Exchange', [['NSE', 'NSE'], ['BSE', 'BSE']]), F.text('accountName', 'Demat account (optional)', { ph: 'e.g. Zerodha' }),
+      F.text('stockSymbol', 'Share / stock symbol', { req: 1, ph: 'e.g. TCS' }), F.chips('exchangeCode', 'Exchange', [['NSE', 'NSE'], ['BSE', 'BSE']]), F.pick('accountName', 'Demat account / broker (optional)', 'broker'),
       F.num('unitsHeld', 'Number of shares', { req: 1, min: 0.0001 }), F.num('avgBuyPrice', 'Average buy price', { req: 1, min: 0.01, rs: 1 }), F.num('lastFetchedPrice', 'Latest price (update it now and then)', { nullable: 1, rs: 1 }) ],
     post: (rec, st, src) => { const old = src ? src.lastFetchedPrice : null; if (rec.lastFetchedPrice != null && rec.lastFetchedPrice !== old) rec.lastFetchedAt = Date.now(); if (rec.lastFetchedPrice == null) rec.lastFetchedAt = null; },
     make: () => ({ accountName: '', stockSymbol: '', exchangeCode: 'NSE', unitsHeld: '', avgBuyPrice: '', lastFetchedPrice: null, lastFetchedAt: null, isArchived: false }) },
   insurance: { arr: 'insurancePolicies', nameKey: 'policyName', noun: 'insurance policy', fields: [
-      F.text('policyName', 'Policy name', { req: 1, ph: 'e.g. HDFC Term Plan' }), F.text('insurerName', 'Insurer', { req: 1 }), F.text('policyNumber', 'Policy no. (optional)'),
+      F.text('policyName', 'Policy name', { req: 1, ph: 'e.g. HDFC Term Plan' }), F.pick('insurerName', 'Insurance company', 'insurer', { req: 1 }), F.text('policyNumber', 'Policy no. (optional)'),
       F.chips('policyType', 'Type', [['TERM', 'Term'], ['HEALTH', 'Health'], ['ENDOWMENT', 'Endowment'], ['MONEY_BACK', 'Money back'], ['ULIP', 'ULIP']]),
       F.num('sumAssured', 'Sum assured', { req: 1, rs: 1, zero: 1 }), F.num('premiumAmount', 'Premium', { req: 1, rs: 1, zero: 1 }), F.chips('premiumFrequency', 'Paid', FREQ3),
       F.date('startDate', 'Start date (optional)', { opt: 1 }), F.date('nextDueDate', 'Next premium due (optional)', { opt: 1 }), F.date('maturityDate', 'Maturity date (optional)', { opt: 1 }),
@@ -756,10 +767,108 @@ Object.assign(WSPEC, {
     post: rec => { rec.lastUpdatedAt = Date.now(); },
     make: () => ({ metalType: 'GOLD', caratType: '22K', form: 'PHYSICAL', quantityGrams: '', currentPricePerGram: null, lastUpdatedAt: null, isArchived: false }) },
 });
+
+const ASSET_T = [['REAL_ESTATE', 'Real estate'], ['VEHICLE', 'Vehicle'], ['OTHER', 'Other']];
+const LIAB_T = [['HOME_LOAN', 'Home loan'], ['CAR_LOAN', 'Car loan'], ['PERSONAL_LOAN', 'Personal loan'], ['CREDIT_CARD', 'Credit card'], ['OTHER', 'Other']];
+const withCur = (list, k) => st => st[k] && !list.some(o => o[0] === st[k]) ? [...list, [st[k], assetLabel(st[k])]] : list;
+const loanChanged = (a, b) => ['principal', 'annualInterestRatePercent', 'tenureMonths'].some(k => a[k] !== b[k]) || dstr(a.startDate) !== dstr(b.startDate);
+const loanNums = s => ({ p: parseFloat(String(s.principal).replace(/,/g, '')), r: parseFloat(String(s.annualInterestRatePercent).replace(/,/g, '')) || 0, n: parseInt(s.tenureMonths, 10) });
+Object.assign(WSPEC, {
+  asset: { arr: 'manualAssets', nameKey: 'name', noun: 'asset', fields: [
+      F.text('name', 'Name', { req: 1, ph: 'e.g. Flat in Pune, Honda City' }), F.chips('assetType', 'Type', null, { }), F.num('currentValue', 'Current value', { req: 1, rs: 1, zero: 1 }) ],
+    post: rec => { rec.lastUpdatedByUserAt = Date.now(); },
+    make: () => ({ name: '', assetType: 'REAL_ESTATE', currentValue: '', lastUpdatedByUserAt: Date.now(), isArchived: false }) },
+  receivable: { arr: 'wealthReceivables', nameKey: 'personName', noun: 'money owed to you', fields: [
+      F.text('personName', 'Who owes you', { req: 1, ph: 'e.g. Rahul' }), F.text('note', 'Note (optional)', { ph: 'e.g. loan, deposit' }), F.num('currentAmount', 'Amount still to receive', { req: 1, rs: 1, zero: 1 }) ],
+    post: rec => { rec.lastUpdatedAt = Date.now(); },
+    make: () => ({ personName: '', note: '', currentAmount: '', lastUpdatedAt: Date.now(), isArchived: false }) },
+  kametti: { arr: 'kamettiAccounts', nameKey: 'name', noun: 'Kametti', fields: [
+      F.text('name', 'Name', { req: 1, ph: 'e.g. Kametti A' }), F.num('monthlyAmount', 'Monthly amount', { req: 1, min: 0.01, rs: 1 }), F.num('totalMonths', 'Total months', { req: 1, int: 1, min: 1 }), F.date('startDate', 'Started on', { req: 1 }) ],
+    entries: { key: 'entries', label: 'Deposits and payout', dateKey: 'entryDate', amtLabel: 'Amount', addLabel: 'Add entry', typeKey: 'isWon', types: [['false', 'Deposit'], ['true', 'Won (pot received)']],
+      build: (ne, st, ents) => {
+        if (ne.type === 'true') { const pot = (parseFloat(st.monthlyAmount) || 0) * (parseInt(st.totalMonths, 10) || 0); if (!(pot > 0)) return 'Fill the monthly amount and total months first; the pot is monthly amount x months.';
+          if (ents.some(e => e.isWon)) return 'The Won payout is already recorded for this Kametti.'; return { amount: -Math.round(pot * 100) / 100, entryDate: tsOf(ne.date), isWon: true }; }
+        const v = Math.round(parseFloat(ne.vals.amt) * 100) / 100; if (!(v > 0)) return 'Enter an amount above zero for the deposit.'; return { amount: v, entryDate: tsOf(ne.date), isWon: false }; } },
+    make: () => ({ name: '', monthlyAmount: '', startDate: Date.now(), totalMonths: '', entries: [], isArchived: false }) },
+  liability: { arr: 'liabilities', nameKey: 'name', noun: 'liability', fields: [
+      F.text('name', 'Name', { req: 1, ph: 'e.g. HDFC credit card' }), F.chips('liabilityType', 'Type', null, {}),
+      F.chips('_mode', 'How is it repaid?', [['FULL', 'One payment (no interest)'], ['EMI', 'EMIs with interest']]),
+      F.num('outstandingBalance', 'Amount still to pay', { req: 1, rs: 1, zero: 1 }),
+      F.date('dueDate', 'Pay by (optional)', { opt: 1, show: s => s._mode === 'FULL' }),
+      F.num('principalAmount', 'Original amount', { req: 1, rs: 1, min: 0.01, show: s => s._mode === 'EMI' }), F.num('interestRate', 'Interest rate (% per year)', { show: s => s._mode === 'EMI', zero: 1 }),
+      F.num('emiAmount', 'EMI per month', { req: 1, rs: 1, min: 0.01, show: s => s._mode === 'EMI' }), F.num('tenureMonths', 'Tenure (months)', { req: 1, int: 1, min: 1, show: s => s._mode === 'EMI' }),
+      F.date('startDate', 'Started on', { req: 1, show: s => s._mode === 'EMI' }) ],
+    pre: st => { st._mode = (+st.emiAmount > 0 || +st.tenureMonths > 0 || +st.interestRate > 0) ? 'EMI' : 'FULL'; },
+    post: (rec, st, src) => { if (rec._mode === 'FULL') { rec.principalAmount = rec.outstandingBalance; rec.interestRate = 0; rec.tenureMonths = 0; rec.emiAmount = 0; rec.startDate = src ? src.startDate : Date.now(); rec.dueDate = rec.dueDate || null; } else rec.dueDate = null; delete rec._mode; },
+    make: () => ({ name: '', liabilityType: 'CREDIT_CARD', principalAmount: '', interestRate: '', tenureMonths: '', emiAmount: '', startDate: Date.now(), outstandingBalance: '', dueDate: null, isArchived: false }) },
+  loan: { arr: 'loans', nameKey: 'name', noun: 'loan', fields: [
+      F.text('name', 'Name', { req: 1, ph: 'e.g. Home loan' }), F.text('lenderName', 'Lender (optional)', { ph: 'e.g. SBI' }),
+      F.pick('lenderName', 'Lender (optional)', 'bank'),
+      F.num('principal', 'Loan amount', { req: 1, min: 0.01, rs: 1 }), F.num('annualInterestRatePercent', 'Interest rate (% per year)', { req: 1, zero: 1 }), F.num('tenureMonths', 'Tenure (months)', { req: 1, int: 1, min: 1 }),
+      F.date('startDate', 'Loan start date', { req: 1 }),
+      { k: '_note', t: 'note', text: s => { const { p, r, n } = loanNums(s); if (!(p > 0) || !(n > 0)) return ''; const e = loanEmi(p, r, n); return 'EMI will be ' + money(e) + ' a month · total interest about ' + money(e * n - p) + '. First EMI is due one month after the start date.'; } } ],
+    check: (rec, st, src) => { if (!src) return ''; const ch = loanChanged(rec, src); if (ch && (src.payments || []).some(p => p.isPaid || p.isPrepayment)) return 'The amount, rate, tenure and start date cannot be changed after an EMI is marked paid. You can still change the name and lender, or delete the loan and add it again.'; return ''; },
+    post: (rec, st, src) => { const ch = !src || loanChanged(rec, src);
+      if (ch) { rec.payments = loanSchedule(rec.principal, rec.annualInterestRatePercent, rec.tenureMonths, rec.startDate); } else rec.payments = st.payments; rec.emiAmount = Math.round(loanEmi(rec.principal, rec.annualInterestRatePercent, rec.tenureMonths)); },
+    extra: (st, repaint, api, isEdit) => {
+      if (!isEdit || !(st.payments || []).length) return null;
+      const pays = st.payments, unpaid = pays.filter(p => !p.isPaid && !p.isPrepayment), paidN = pays.filter(p => p.isPaid).length;
+      const showAll = st._all, rows = (showAll ? pays : unpaid.slice(0, 6));
+      return h('div', null, h('div', { class: 'flbl' }, `EMIs: ${paidN} of ${pays.length} paid`),
+        h('div', { class: 'erows' }, rows.map(p => h('div', { class: 'erow' }, h('span', null, '#' + p.installmentNumber + ' · ' + fmtDate(p.dueDate)), h('b', null, money(p.emiAmount)),
+          h('button', { class: 'btn' + (p.isPaid ? ' ghost' : ''), type: 'button', onclick: () => { p.isPaid = !p.isPaid; p.paidDate = p.isPaid ? Date.now() : null; repaint(); } }, p.isPaid ? 'Paid ✓ (undo)' : 'Mark paid')))),
+        pays.length > rows.length || showAll ? h('button', { class: 'link', type: 'button', onclick: () => { st._all = !st._all; repaint(); } }, showAll ? 'Show fewer' : 'Show all ' + pays.length + ' EMIs') : null);
+    },
+    make: () => ({ name: '', lenderName: '', principal: '', annualInterestRatePercent: '', tenureMonths: '', startDate: Date.now(), emiAmount: 0, payments: [], isArchived: false }) },
+  goal: { arr: 'goals', nameKey: 'name', noun: 'goal', noNW: 1, fields: [
+      F.text('name', 'Goal name', { req: 1, ph: 'e.g. Home down payment' }), F.num('targetAmount', 'Target amount', { req: 1, min: 0.01, rs: 1 }), F.date('targetDate', 'Target date (optional)', { opt: 1 }) ],
+    extra: (st, repaint) => {
+      const rev = Object.fromEntries(Object.entries(GOAL_MAP).map(([a, b]) => [b, a])); st.linkedAssets = st.linkedAssets || [];
+      const has = (t, n) => st.linkedAssets.some(l => l.type === t && l.name === n);
+      const groups = computed().cats.filter(c => rev[c.key] && c.items.length);
+      return h('div', null, h('div', { class: 'flbl' }, 'Money set aside for this goal (tick what counts)'),
+        groups.length ? groups.map(c => h('div', null, h('div', { class: 'small', style: { marginTop: '8px' } }, c.label), c.items.map(i => { const t = rev[c.key], on = has(t, i.name);
+          return h('label', { class: 'checkrow' }, h('input', { type: 'checkbox', checked: on, onchange: e => { if (e.target.checked) { if (!has(t, i.name)) st.linkedAssets.push({ type: t, name: i.name }); } else st.linkedAssets = st.linkedAssets.filter(l => !(l.type === t && l.name === i.name)); } }), h('span', null, i.name), h('b', null, money(i.value))); }))) : h('p', { class: 'small' }, 'Add some assets first, then link them here.'));
+    },
+    post: (rec, st) => { rec.linkedAssets = st.linkedAssets || []; },
+    make: () => ({ name: '', targetAmount: '', targetDate: null, linkedAssets: [], isArchived: false }) },
+  rent: { arr: 'rentReceivables', nameKey: 'propertyName', noun: 'rented property', noNW: 1, fields: [
+      F.text('propertyName', 'Property', { req: 1, ph: 'e.g. Rohini flat' }), F.text('tenantName', 'Tenant name (optional)'), F.text('tenantPhone', 'Tenant phone (optional)'),
+      F.num('monthlyRent', 'Monthly rent', { req: 1, min: 0.01, rs: 1 }), F.num('securityDeposit', 'Security deposit', { zero: 1, rs: 1 }), F.date('startDate', 'Tenant moved in on', { req: 1 }) ],
+    entries: { key: 'payments', label: 'Rent and deposit received', dateKey: 'receivedDate', amtLabel: 'Amount', addLabel: 'Add received', typeKey: 'entryType', types: [['RENT', 'Rent'], ['SECURITY', 'Security deposit']], mode: { opts: [['CASH', 'Cash'], ['TRANSFER', 'Bank transfer'], ['UPI', 'UPI']] },
+      build: ne => { const v = Math.round(parseFloat(ne.vals.amt) * 100) / 100; if (!(v > 0)) return 'Enter the amount received (above zero).'; const t = tsOf(ne.date); return { amount: v, paymentMode: ne.mode, dueDate: t, receivedDate: t, entryType: ne.type }; },
+      line: e => money(e.amount) + ' · ' + String(e.paymentMode || '').toLowerCase() },
+    make: () => ({ propertyName: '', tenantName: '', tenantPhone: '', monthlyRent: '', securityDeposit: 0, startDate: Date.now(), payments: [], isArchived: false }) },
+});
+WSPEC.asset.fields[1].opts = withCur(ASSET_T, 'assetType'); WSPEC.liability.fields[1].opts = withCur(LIAB_T, 'liabilityType');
+WSPEC.loan.fields.splice(1, 1); // keep only the lender picker
 const wealthByName = (d, name) => activeBooks(d).find(b => b.name === name && b.bookType === 'WEALTH');
-const mutateWealth = fn => { const name = currentBook().name; return mutate(d => { const b = wealthByName(d, name); if (!b) throw new Error('This book was not found any more.'); fn(b); }); };
+const mutateWealth = fn => { const name = currentBook().name; return mutate(d => { const b = wealthByName(d, name); if (!b) throw new Error('This book was not found any more.'); fn(b, d); }); };
 const tsOf = v => { const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d, 12).getTime(); };
 
+
+// A searchable list of banks. Typing a name that is not in the list offers to add it.
+function openBankPicker(cur, names, onPick, kind = 'bank') {
+  const lab = KIND_LABEL[kind] || 'item';
+  const all = cur && !names.some(n => sameName(n, cur)) ? [cur, ...names] : names;
+  const q = h('input', { type: 'text', placeholder: 'Search, or type a new ' + lab + ' name…', 'aria-label': 'Search ' + lab + 's', autocomplete: 'off', autocapitalize: 'words' });
+  const list = h('div', { class: 'blist', role: 'listbox' });
+  const nice = t => t.replace(/\s+/g, ' ').trim().replace(/\w\S*/g, w => w === w.toLowerCase() || w === w.toUpperCase() && w.length > 4 ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w);
+  const done = (n, isNew) => { ov.remove(); onPick(n, isNew); };
+  const paint = () => {
+    const raw = q.value.trim(), t = raw.toLowerCase(), m = all.filter(n => !t || n.toLowerCase().includes(t));
+    const rows = m.map(n => h('button', { type: 'button', role: 'option', class: 'bopt' + (sameName(n, cur) ? ' on' : ''), onclick: () => done(n, false) }, n, sameName(n, cur) ? ' ✓' : ''));
+    if (raw && !all.some(n => sameName(n, raw))) { const addRow = h('button', { type: 'button', class: 'bopt add', onclick: () => done(nice(raw), true) }, '+ Add “' + nice(raw) + '” as a new ' + lab); if (rows.length) rows.push(addRow); else rows.unshift(addRow); }
+    
+    list.replaceChildren(...rows);
+  };
+  q.addEventListener('input', paint);
+  q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); const f = list.querySelector('.bopt'); if (f) f.click(); } });
+  const sheet = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Choose ' + lab },
+    h('div', { class: 'sheethead' }, h('h2', null, 'Choose ' + (/^[aeiou]/.test(lab) ? 'an ' : 'a ') + lab), h('button', { class: 'x', type: 'button', 'aria-label': 'Close', onclick: () => ov.remove() }, '×')), q, list);
+  const ov = h('div', { class: 'overlay picker', onclick: e => { if (e.target === ov) ov.remove(); } }, sheet);
+  document.body.append(ov); paint(); setTimeout(() => q.focus(), 50);
+}
 function toggleRow(label, get, set) {
   const sw = h('button', { type: 'button', class: 'switch', role: 'switch' }, h('span', { class: 'knob' }));
   const paint = () => { sw.setAttribute('aria-checked', String(!!get())); sw.className = 'switch' + (get() ? ' on' : ''); };
@@ -772,21 +881,41 @@ function openWealth(key, it) {
   const arr0 = book[spec.arr] || [], idx0 = isEdit ? arr0.indexOf(src) : -1, origName = isEdit ? idOf(src) : null;
   const st = JSON.parse(JSON.stringify(isEdit ? src : spec.make()));
   if (spec.pre) spec.pre(st);
+  st._auto = !isEdit && !!spec.auto;
+  if (spec.fields.some(f => f.t === 'tenure')) { const tm = +st.tenureMonths || 0; st._ty = tm ? String(Math.floor(tm / 12) || '') : ''; st._tm = tm % 12 ? String(tm % 12) : ''; st._td = +st.tenureExtraDays ? String(st.tenureExtraDays) : ''; }
   const ds = {}; spec.fields.forEach(f => { if (f.t === 'date') ds[f.k] = st[f.k] ? dstr(st[f.k]) : ''; if (f.t === 'num' && st[f.k] != null) st[f.k] = String(st[f.k]); if (f.t === 'chips' && st[f.k] != null && typeof f.opts !== 'function' && f.opts.some(o => typeof o[0] === 'string') && typeof st[f.k] !== 'string') st[f.k] = String(st[f.k]); });
   const ent = spec.entries, ents = ent ? (st[ent.key] || []) : null; if (ent) st[ent.key] = ents;
   const inputs = ent ? (ent.inputs || [{ k: 'amt', label: ent.amtLabel || 'Amount' }]) : [];
-  const ne = { date: dstr(Date.now()), vals: {}, type: ent && ent.types ? ent.types[0][0] : null };
+  const ne = { date: dstr(Date.now()), vals: {}, type: ent && ent.types ? ent.types[0][0] : null, mode: ent && ent.mode ? ent.mode.opts[0][0] : null };
+  const newPicks = [];
   sheetForm((isEdit ? 'Edit ' : 'Add ') + spec.noun, api => {
-    const fieldsBox = h('div', null), entBox = h('div', null);
+    const fieldsBox = h('div', null), entBox = h('div', null), extraBox = h('div', null);
+    const autoOf = o => (spec.autoName || []).map(k => String(o[k] == null ? '' : o[k]).trim()).filter(Boolean).join(' ');
+    const prev = h('div', { class: 'small prevname' });
+    const updPrev = () => { if (!spec.autoName) return; const n = autoOf(st) || (isEdit ? src.name : ''); prev.textContent = n ? 'Will be saved as: “' + n + '”' : 'The name is made from ' + spec.autoHint + '.'; };
+    const renderField = f => {
+        let ctl;
+        if (f.t === 'note') { const t = f.text(st); return t ? h('div', { class: 'small autonote' }, t) : null; }
+        if (f.t === 'chips') { const o = typeof f.opts === 'function' ? f.opts(st) : f.opts; ctl = chipRow(o, () => st[f.k], v => { st[f.k] = v; if (spec.auto) { if (f.k === 'payoutMode') st._auto = true; else if (f.k === 'interestType') st._auto = false; if (st._auto) spec.auto(st); } paint(); }); }
+        else if (f.t === 'date') ctl = h('input', { type: 'date', value: ds[f.k], 'aria-label': f.label, oninput: e => { ds[f.k] = e.target.value; } });
+        else if (f.t === 'pick') { const btn = h('button', { type: 'button', class: 'pickbtn' }, ''); const paintB = () => { btn.textContent = st[f.k] ? st[f.k] : 'Choose ' + (/^[aeiou]/.test(KIND_LABEL[f.kind]) ? 'an ' : 'a ') + KIND_LABEL[f.kind] + '…'; btn.className = 'pickbtn' + (st[f.k] ? '' : ' empty'); btn.append(h('span', { class: 'chev' }, '▾')); }; paintB();
+          btn.onclick = () => openBankPicker(st[f.k], optionList(f.kind, S.data), (n, isNew) => { st[f.k] = n; if (isNew && !newPicks.some(x => x.kind === f.kind && sameName(x.name, n))) newPicks.push({ kind: f.kind, name: n }); paintB(); updPrev(); }, f.kind); ctl = btn; }
+        else if (f.t === 'tenure') ctl = h('div', { class: 'ten3' }, [['_ty', 'Years'], ['_tm', 'Months'], ['_td', 'Days']].map(([k, l]) => h('label', { class: 'tenbox' }, h('input', { type: 'text', inputmode: 'numeric', value: st[k] || '', placeholder: '0', 'aria-label': l, autocomplete: 'off', oninput: e => { st[k] = e.target.value.replace(/\D/g, ''); if (spec.auto) { st._auto = true; paint(); } } }), h('span', null, l))));
+        else ctl = h('input', { type: 'text', value: st[f.k] == null ? '' : String(st[f.k]), inputmode: f.t === 'num' ? 'decimal' : null, placeholder: f.ph || '', 'aria-label': f.label, autocomplete: 'off', oninput: e => { st[f.k] = e.target.value; updPrev(); refreshNotes(); } });
+        return h('div', null, h('div', { class: 'flbl' }, f.label), ctl);
+    };
+    const wraps = spec.fields.map(() => h('div', null)); fieldsBox.append(...wraps);
+    const refreshNotes = () => spec.fields.forEach((f, ix) => { if (f.t === 'note') { const n = renderField(f); wraps[ix].replaceChildren(...(n ? [n] : [])); } });
     const paint = () => {
       if (spec.fix) spec.fix(st);
-      fieldsBox.replaceChildren(...spec.fields.filter(f => !f.show || f.show(st)).map(f => {
-        let ctl;
-        if (f.t === 'chips') { const o = typeof f.opts === 'function' ? f.opts(st) : f.opts; ctl = chipRow(o, () => st[f.k], v => { st[f.k] = v; paint(); }); }
-        else if (f.t === 'date') ctl = h('input', { type: 'date', value: ds[f.k], 'aria-label': f.label, oninput: e => { ds[f.k] = e.target.value; } });
-        else ctl = h('input', { type: 'text', value: st[f.k] == null ? '' : String(st[f.k]), inputmode: f.t === 'num' ? 'decimal' : null, placeholder: f.ph || '', 'aria-label': f.label, autocomplete: 'off', oninput: e => { st[f.k] = e.target.value; } });
-        return h('div', null, h('div', { class: 'flbl' }, f.label), ctl);
-      }));
+      if (spec.auto && st._auto) spec.auto(st);
+      spec.fields.forEach((f, ix) => {
+        const w = wraps[ix]; const vis = !f.show || f.show(st); w.hidden = !vis; if (!vis) return;
+        if (!(f.t === 'chips' || f.t === 'note') && w._done) return;
+        w._done = true; const node = renderField(f); w.replaceChildren(...(node ? [node] : []));
+      });
+      if (spec.autoName) { updPrev(); if (!prev.parentNode) { let li = 0; spec.fields.forEach((f, ix) => { if (spec.autoName.includes(f.k)) li = ix; }); wraps[li].after(prev); } }
+      if (spec.extra) { const xn = spec.extra(st, paint, api, isEdit); extraBox.replaceChildren(...(xn ? [xn] : [])); }
       if (ent) {
         const sorted = ents.map((e, i) => ({ e, i })).sort((a, b) => b.e[ent.dateKey] - a.e[ent.dateKey]);
         const dIn = h('input', { type: 'date', value: ne.date, 'aria-label': 'Date', oninput: e => { ne.date = e.target.value; } });
@@ -794,7 +923,7 @@ function openWealth(key, it) {
         const add = h('button', { type: 'button', class: 'btn', onclick: () => {
           if (!ne.date) return api.fail('Choose the date of the entry.');
           let row;
-          if (ent.build) { row = ent.build(ne); if (typeof row === 'string') return api.fail(row); }
+          if (ent.build) { row = ent.build(ne, st, ents); if (typeof row === 'string') return api.fail(row); }
           else { const v = Math.round(parseFloat(ne.vals.amt) * 100) / 100; if (!(v > 0)) return api.fail('Enter a date and an amount above zero for the entry.');
             row = { amount: v, [ent.dateKey]: tsOf(ne.date), ...(ent.typeKey ? { [ent.typeKey]: ne.type } : {}), ...(ent.extra || {}), ...(key === 'ppf' ? { note: '' } : {}) }; }
           ents.push(row); ne.vals = {}; api.fail(''); paint(); } }, '+ ' + ent.addLabel);
@@ -802,6 +931,7 @@ function openWealth(key, it) {
         const tname = e => ent.types ? ((ent.types.find(t => t[0] === String(e[ent.typeKey])) || [0, ''])[1]) : '';
         entBox.replaceChildren(h('div', { class: 'flbl' }, ent.label + ' (' + ents.length + ')'),
           ent.types ? chipRow(ent.types, () => ne.type, v => { ne.type = v; }) : null,
+          ent.mode ? chipRow(ent.mode.opts, () => ne.mode, v => { ne.mode = v; }) : null,
           h('div', { class: 'two' }, h('div', null, dIn), h('div', { class: 'stack' }, ins)), h('div', { class: 'actions' }, add),
           h('div', { class: 'erows' }, sorted.map(({ e, i }) => h('div', { class: 'erow' }, h('span', null, fmtDate(e[ent.dateKey]), tname(e) ? ' · ' + tname(e) : ''), h('b', null, show(e)),
             h('button', { class: 'x', type: 'button', 'aria-label': 'Remove entry', onclick: () => { ents.splice(i, 1); paint(); } }, '×')))));
@@ -811,11 +941,14 @@ function openWealth(key, it) {
     const save = h('button', { type: 'button', class: 'btn primary big' }, isEdit ? 'Save changes' : 'Add');
     save.onclick = () => {
       const rec = {};
+      if (spec.auto && st._auto) spec.auto(st);
       for (const f of spec.fields.filter(f => !f.show || f.show(st))) {
+        if (f.t === 'note') continue;
         if (f.t === 'chips') { rec[f.k] = st[f.k]; continue; }
+        if (f.t === 'tenure') { const y = +st._ty || 0, mo = +st._tm || 0, d = +st._td || 0; if (y * 12 + mo + d <= 0) return api.fail('Enter the tenure: years, months and/or days (any one is enough).'); if (y > 50) return api.fail('That tenure looks too long.'); rec.tenureMonths = y * 12 + mo; rec.tenureExtraDays = d; continue; }
         if (f.t === 'date') { if (!ds[f.k]) { if (f.opt) { rec[f.k] = null; continue; } return api.fail('Choose “' + f.label + '”.'); } rec[f.k] = tsOf(ds[f.k]); continue; }
         const raw = String(st[f.k] == null ? '' : st[f.k]).trim().replace(/,/g, '');
-        if (f.t === 'text') { if (f.req && !raw) return api.fail('Enter ' + f.label.toLowerCase() + '.'); rec[f.k] = raw; continue; }
+        if (f.t === 'text' || f.t === 'pick') { if (f.req && !raw) return api.fail((f.t === 'pick' ? 'Choose ' : 'Enter ') + f.label.toLowerCase() + '.'); rec[f.k] = raw; continue; }
         if (!raw) { if (f.req) return api.fail('Enter ' + f.label.toLowerCase() + '.'); rec[f.k] = f.nullable ? null : (f.def != null ? f.def : 0); continue; }
         const v = parseFloat(raw); if (!isFinite(v)) return api.fail('“' + f.label + '” must be a number.');
         if (f.min != null && v < f.min) return api.fail('“' + f.label + '” must be at least ' + f.min + '.'); if (!f.zero && !f.min && v < 0) return api.fail('“' + f.label + '” cannot be negative.');
@@ -823,9 +956,13 @@ function openWealth(key, it) {
       }
       if (rec.interestRate != null && rec.interestRate > 100) return api.fail('The interest rate looks too high.');
       if (ent) rec[ent.key] = ents;
-      rec.excludeFromNetWorth = !!st.excludeFromNetWorth;
+      if (spec.autoName) { const nm = autoOf(rec); if (nm) rec.name = nm; else if (isEdit) rec.name = src.name; else return api.fail('Enter ' + spec.autoHint + '.'); }
+      if (spec.auto && rec.interestType == null) rec.interestType = st.interestType;
+      if (!spec.noNW) rec.excludeFromNetWorth = !!st.excludeFromNetWorth;
+      if (spec.check) { const m = spec.check(rec, st, src, isEdit); if (m) return api.fail(m); }
       if (spec.post) spec.post(rec, st, src);
-      api.run(save, 'Saving…', () => mutateWealth(b => {
+      api.run(save, 'Saving…', () => mutateWealth((b, d) => {
+        newPicks.forEach(({ kind, name }) => { d.customLists = d.customLists || {}; d.customLists[kind] = d.customLists[kind] || []; if (!optionList(kind, d).some(x => sameName(x, name))) d.customLists[kind].push(name); });
         b[spec.arr] = b[spec.arr] || []; let tgt;
         if (isEdit) { tgt = b[spec.arr][idx0]; if (!tgt || idOf(tgt) !== origName) tgt = b[spec.arr].find(x => idOf(x) === origName); if (!tgt) throw new Error('This item was changed or removed on another device.'); }
         else { tgt = spec.make(); b[spec.arr].push(tgt); }
@@ -834,9 +971,9 @@ function openWealth(key, it) {
     };
     const extra = [];
     if (isEdit) { const del = h('button', { type: 'button', class: 'btn danger' }, 'Delete');
-      del.onclick = () => { if (!confirm('Delete “' + origName + '”? This removes it and its history from your Net Worth.')) return;
+      del.onclick = () => { if (!confirm('Delete “' + origName + '”? This removes it and its history.')) return;
         api.run(del, 'Deleting…', () => mutateWealth(b => { const a = b[spec.arr] || []; let i = a[idx0] && idOf(a[idx0]) === origName ? idx0 : a.findIndex(x => idOf(x) === origName); if (i < 0) throw new Error('This item was already removed.'); a.splice(i, 1); })).then(ok => ok && toast('Deleted')); }; extra.push(del); }
-    return h('div', null, fieldsBox, entBox, toggleRow('Count in Net Worth', () => !st.excludeFromNetWorth, v => { st.excludeFromNetWorth = !v; }), h('div', { class: 'actions' }, save, extra));
+    return h('div', null, fieldsBox, extraBox, entBox, spec.noNW ? null : toggleRow('Count in Net Worth', () => !st.excludeFromNetWorth, v => { st.excludeFromNetWorth = !v; }), h('div', { class: 'actions' }, save, extra));
   });
 }
 function openCash() {

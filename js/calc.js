@@ -97,3 +97,25 @@ export function ppfEpfValue(deposits, rates, asOf = Date.now()) {
   }
   return opening;
 }
+
+// ---- Loans (same reducing-balance method as the Android app) ----
+export function loanEmi(principal, ratePct, months) {
+  if (!(months > 0) || !(principal > 0)) return 0;
+  const r = ratePct / 12 / 100; if (r === 0) return principal / months;
+  const f = Math.pow(1 + r, months); return principal * r * f / (f - 1);
+}
+function nextMonth(ts) { // calendar step that keeps month-ends (31 Jan -> 28 Feb), like Android's Calendar.add(MONTH)
+  const d = new Date(ts), day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + 1);
+  d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return d.getTime();
+}
+export function loanSchedule(principal, ratePct, months, startDate) {
+  const out = []; if (!(months > 0) || !(principal > 0)) return out;
+  const emi = loanEmi(principal, ratePct, months), r = ratePct / 12 / 100; let bal = principal, when = startDate;
+  for (let n = 1; n <= months; n++) {
+    when = nextMonth(when); const open = bal, interest = open * r; let prin = emi - interest, close = open - prin;
+    if (n === months || close < 0) { prin = open; close = 0; }
+    out.push({ installmentNumber: n, dueDate: when, emiAmount: n === months ? prin + interest : emi, principalComponent: prin, interestComponent: interest, openingBalance: open, closingBalance: close, isPaid: false, paidDate: null, isPrepayment: false });
+    bal = close;
+  }
+  return out;
+}
