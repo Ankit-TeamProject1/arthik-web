@@ -192,3 +192,9 @@ a.btn{display:inline-block;text-decoration:none;text-align:center}
 .blist{overflow:auto;min-height:120px;display:flex;flex-direction:column}.bopt{text-align:left;padding:12px 8px;border:0;border-bottom:1px solid var(--line);background:none;color:var(--ink);font-size:15px;cursor:pointer}
 .bopt:hover{background:var(--soft)}.bopt.on{font-weight:700;color:var(--pri)}.bopt.add{color:var(--pri);font-weight:700}
 .checkrow{display:flex;align-items:center;gap:10px;padding:8px 2px;border-bottom:1px solid var(--line);font-size:14px;cursor:pointer}.checkrow input{width:20px;height:20px;flex:none}.checkrow span{flex:1}.erow .btn{padding:6px 10px;font-size:13px;min-height:0}
+.back{margin:0 0 8px;padding:6px 12px;min-height:0}.sortbar{display:flex;align-items:center;gap:8px;margin:0 0 12px}.sortbar select{max-width:100%}.iline.dim{color:var(--mut2);font-size:12px}
+.item.paused{opacity:.55}
+.banner{display:block;margin:0 0 12px;padding:10px 14px;border-radius:6px;background:#FEF3C7;color:#78350F;border:1px solid #F59E0B;text-decoration:none;font-size:14px}
+@media (max-width:480px){.layout>.nav a{font-size:11px;padding:6px 2px;letter-spacing:-.2px}}
+.reddot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#EF4444;margin-left:4px;vertical-align:middle}.morelink{text-decoration:none;color:inherit;display:block}
+.layout>.nav a{position:relative}.layout>.nav .reddot{position:absolute;top:6px;left:50%;margin-left:16px}

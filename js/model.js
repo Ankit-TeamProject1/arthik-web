@@ -200,7 +200,7 @@ export const localMonth = (ts) => { const d = new Date(ts); return d.getFullYear
 export const utcMonth = (ts) => { const d = new Date(ts); return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1); };
 
 export function computeExpense(book, now = Date.now()) {
-  const txs = (book.transactions || []).slice().sort((a, b) => b.occurredAt - a.occurredAt);
+  const txs = (book.transactions || []).filter(t => !t.isDeleted).slice().sort((a, b) => b.occurredAt - a.occurredAt);
   const accAll = book.accounts || [], catAll = book.categories || [];
   const acc = Object.fromEntries(accAll.map(a => [a.localId, a])), cat = Object.fromEntries(catAll.map(c => [c.localId, c]));
   const bal = Object.fromEntries(accAll.map(a => [a.localId, 0]));
@@ -223,10 +223,10 @@ export function computeExpense(book, now = Date.now()) {
   const budgets = (book.budgets || []).filter(b => b.month === um).map(b => ({ cat: cat[b.categoryLocalId], cap: b.capAmount, spent: spentByCat[b.categoryLocalId] || 0 }))
     .sort((a, b) => (b.spent / b.cap) - (a.spent / a.cap));
   const topCats = Object.entries(spentByCat).map(([id, v]) => ({ cat: cat[id], spent: v })).sort((a, b) => b.spent - a.spent);
-  const upcoming = (book.recurringRules || []).filter(r => !r.isPaused && r.nextRunAt <= now + 7 * 86400000 && (!r.endDate || r.nextRunAt <= r.endDate))
+  const upcoming = (book.recurringRules || []).filter(r => !r.isDeleted && !r.isPaused && r.nextRunAt <= now + 7 * 86400000 && (!r.endDate || r.nextRunAt <= r.endDate))
     .sort((a, b) => a.nextRunAt - b.nextRunAt).map(r => ({ ...r, account: acc[r.accountLocalId], cat: cat[r.categoryLocalId] }));
   const owed = (book.expenseReceivables || []).filter(r => !r.isCollected);
-  return { txs, acc, cat, accounts, rulesAll: book.recurringRules || [], today, month, monthIncome, budgets, topCats, upcoming, owed, total: accounts.reduce((s, a) => s + a.balance, 0) };
+  return { txs, acc, cat, accounts, rulesAll: (book.recurringRules || []).filter(r => !r.isDeleted), today, month, monthIncome, budgets, topCats, upcoming, owed, total: accounts.reduce((s, a) => s + a.balance, 0) };
 }
 
 const _pretty = v => String(v || '').replace(/_/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase());

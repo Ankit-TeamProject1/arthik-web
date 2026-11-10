@@ -3,6 +3,7 @@ import * as dbx from './dropbox.js';
 import { optionList, sameName, KIND_LABEL } from './lists.js';
 import { encrypt, decrypt, isEncrypted } from './crypto.js';
 import { loanEmi, loanSchedule } from './calc.js';
+import { RTYPES, recurringItems, eventItems, allDue, confirmInBook, declineInBook, rentPending, calendarEvents, buildIcs, googleLink, eventTitle } from './recurring.js';
 import { GOAL_MAP, assetLabel, utcMonth, CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, setMask, money, pct, fmtDate, metalLabel } from './model.js';
 
 const root = document.getElementById('app');
@@ -39,7 +40,7 @@ let lockTimer = null, lastActive = Date.now();
 function touch() { lastActive = Date.now(); clearTimeout(lockTimer); if (S.data) lockTimer = setTimeout(lock, AUTO_LOCK_MS); }
 ['click', 'keydown', 'touchstart', 'scroll', 'mousemove'].forEach(e => addEventListener(e, touch, { passive: true }));
 document.addEventListener('visibilitychange', () => { if (!document.hidden && S.data && Date.now() - lastActive > AUTO_LOCK_MS) lock(); });
-function lock() { S.data = null; S.pw = null; closeModal(); view.cache = null; clearTimeout(lockTimer); if (S.enc) screenUnlock('Locked.'); else screenWelcome(); }
+function lock() { dueSeen.clear(); S.data = null; S.pw = null; closeModal(); view.cache = null; clearTimeout(lockTimer); if (S.enc) screenUnlock('Locked.'); else screenWelcome(); }
 
 // ---------- screens: welcome / sign-in ----------
 function shell(...content) {
@@ -164,12 +165,14 @@ function screenSetup(replacing) {
 
 // ---------- main app ----------
 const NAV_W = [
-  { id: 'dashboard', label: 'Home' }, { id: 'liabilities', label: 'Liabilities' }, { id: 'goals', label: 'Goals' },
-  { id: 'rent', label: 'Rent' }, { id: 'settings', label: 'Settings' },
+  { id: 'dashboard', label: 'Home' }, { id: 'liabilities', label: 'Liabilities' }, { id: 'cards', label: 'Credit cards' }, { id: 'goals', label: 'Goals' },
+  { id: 'rent', label: 'Rent' }, { id: 'recurring', label: 'Recurring' }, { id: 'settings', label: 'Settings' },
 ];
 const NAV_E = [
-  { id: 'dashboard', label: 'Home' }, { id: 'transactions', label: 'Entries' }, { id: 'budgets', label: 'Budgets' }, { id: 'settings', label: 'Settings' },
+  { id: 'dashboard', label: 'Home' }, { id: 'transactions', label: 'Entries' }, { id: 'recurring', label: 'Recurring' }, { id: 'budgets', label: 'Budgets' }, { id: 'settings', label: 'Settings' },
 ];
+const NAV_WM = [{ id: 'dashboard', label: 'Home' }, { id: 'liabilities', label: 'Liabilities' }, { id: 'recurring', label: 'Recurring' }, { id: 'more', label: 'More' }];
+const NAV_EM = [{ id: 'dashboard', label: 'Home' }, { id: 'transactions', label: 'Entries' }, { id: 'recurring', label: 'Recurring' }, { id: 'more', label: 'More' }];
 const view = { cache: null };
 let em = 0; // Expense dashboard month offset (0 = this month, -1 = last month...)
 const monthNow = () => { if (!em) return Date.now(); const d = new Date(); return new Date(d.getFullYear(), d.getMonth() + em, 15, 12).getTime(); };
@@ -194,22 +197,35 @@ function route() {
   const NAV = isExp ? NAV_E : NAV_W;
   if (!book) body = emptyState();
   else if (isExp && page === 'transactions') body = pageEntries();
+  else if (page === 'more') body = pageMore();
+  else if (page === 'calendar') body = pageCalendar();
   else if (isExp && page === 'budgets') body = pageBudgets();
+  else if (isExp && page === 'recurring') body = pageRecurring();
   else if (isExp && page === 'accounts') body = pageAccounts();
   else if (isExp && page === 'categories') body = pageCategories();
+  else if (isExp && page === 'trash') body = pageTrash();
   else if (isExp && page !== 'settings') body = pageExpenseDashboard();
   else if (page === 'cat') body = pageCategory(arg);
-  else if (page === 'liabilities') body = pageLiabilities();
+  else if (page === 'liabilities') body = pageLiabilities(false);
+  else if (page === 'cards') body = pageLiabilities(true);
   else if (page === 'goals') body = pageGoals();
   else if (page === 'rent') body = pageRent();
+  else if (page === 'recurring') body = pageWealthRecurring();
+  else if (page === 'more') body = pageMore();
+  else if (page === 'trash') body = pageTrash();
   else if (page === 'settings') body = pageSettings();
   else body = pageDashboard();
-  const active = ['cat'].includes(page) ? 'dashboard' : ['accounts', 'categories'].includes(page) ? 'settings' : (NAV.find(n => n.id === page) ? page : 'dashboard');
-  const nav = h('nav', { class: 'nav', 'aria-label': 'Main' }, NAV.map(n => h('a', { href: '#/' + n.id, class: n.id === active ? 'on' : '', 'aria-current': n.id === active ? 'page' : null }, h('span', { class: 'dot' }), n.label)));
+  const active = ['cat'].includes(page) ? 'dashboard' : ['accounts', 'categories', 'trash'].includes(page) ? 'settings' : (NAV.find(n => n.id === page) ? page : 'dashboard');
+  const dueN = !book ? 0 : isExp ? dueRules(book).length : wDue(book, true).length;
+  const mkNav = (list, act) => h('nav', { class: 'nav', 'aria-label': 'Main' }, list.map(n => h('a', { href: '#/' + n.id, class: n.id === act ? 'on' : '', 'aria-current': n.id === act ? 'page' : null }, h('span', { class: 'dot' }), n.label, n.id === 'recurring' && dueN ? h('span', { class: 'reddot', 'aria-label': dueN + ' due' }) : null)));
+  const mList = isExp ? NAV_EM : NAV_WM, mActive = mList.some(n => n.id === page) ? page : (['dashboard', 'cat'].includes(page) ? 'dashboard' : 'more');
+  const nav = mkNav(mList, mActive), sideNav = mkNav(NAV, active);
   const brandRow = () => h('div', { class: 'brand sm' }, h('img', { class: 'logo', src: 'icons/logo.png', alt: '', width: 40, height: 40 }), h('div', { class: 'brandname' }, 'Arthik'));
-  const side = h('aside', { class: 'side' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker()), nav.cloneNode(true));
+  const side = h('aside', { class: 'side' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker()), sideNav);
   mount(h('div', { class: 'layout' }, side, h('main', { class: 'main' }, h('div', { class: 'mbar' }, brandRow(), h('div', { class: 'bookbox' }, bookPicker())), body, (isExp && canEdit() ? h('button', { class: 'fab', 'aria-label': 'Add an entry', onclick: () => openEntry(null) }, '+') : null), h('div', { class: 'foot' }, 'Arthik web ' + APP_VERSION + (canEdit() ? ' · editing on' : ' · view only') + (matchMedia('(hover:hover)').matches ? (isExp ? (canEdit() ? ' · shortcuts: N new entry, / search' : ' · shortcut: / search') : ' · shortcut: H hide values') : ''))), nav));
   window.scrollTo(0, 0);
+  if (isExp && canEdit() && !dueSeen.has(book.name)) { dueSeen.add(book.name); if (dueRules(book).length) setTimeout(showDue, 300); }
+  if (book && !isExp && canEdit() && !dueSeen.has(book.name)) { dueSeen.add(book.name); if (wDue(book).length) setTimeout(showWealthDue, 300); }
 }
 addEventListener('hashchange', () => { if (S.data) route(); });
 // Laptop shortcuts: "/" search entries, "h" hide or show values, "g" then nothing else is needed.
@@ -266,6 +282,12 @@ const hidden = () => { try { return localStorage.getItem('arthik.hide') === '1';
 const setHidden = (v) => { try { v ? localStorage.setItem('arthik.hide', '1') : localStorage.removeItem('arthik.hide'); } catch {} };
 const mask = (t) => t;
 
+function pageMore() {
+  const book = currentBook(), isExp = book.bookType === 'EXPENSE', c = computed();
+  const links = isExp ? [['#/budgets', 'Budgets', 'Monthly limits per category'], ['#/calendar', 'Calendar reminders', 'Add due dates to Google Calendar (optional)'], ['#/settings', 'Settings', 'Accounts, categories, backup, theme'], ['#/trash', 'Recently deleted', trashItems(book).length + ' item(s) you can restore']]
+    : [['#/cards', 'Credit cards', 'Dues on your cards'], ['#/goals', 'Goals', 'Savings goals and progress'], ['#/rent', 'Rent', 'Properties you rent out'], ['#/calendar', 'Calendar reminders', 'Add due dates to Google Calendar (optional)'], ['#/settings', 'Settings', 'Backup, theme, your data file'], ['#/trash', 'Recently deleted', trashItems(book).length + ' item(s) you can restore']];
+  return h('div', null, bookHeader('More', book.name), h('div', { class: 'list' }, links.map(([href, t, sub]) => h('a', { class: 'item clk morelink', href }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, t), h('div', { class: 'ival' }, '›')), h('div', { class: 'isub' }, sub)))));
+}
 function pageDashboard() {
   const c = computed(), book = currentBook();
   const d = donut(c);
@@ -280,8 +302,7 @@ function pageDashboard() {
     const gain = x.cost > 0 && ['demat', 'mf'].includes(x.key) ? (x.total - x.cost) / x.cost * 100 : null;
     return tile('#/cat/' + x.key, x.label, x.code, x.color, x.ill, money(x.total), c.assets > 0 ? x.total / c.assets * 100 : 0, gain, x.items.some(i => i.excluded));
   });
-  tiles.push(tile('#/liabilities', 'Liabilities', 'LI', '#EF4444', 'liab', money(c.liabTotal), c.liabTotal > 0 ? 100 : 0, null, false));
-  return h('div', null, bookHeader('Dashboard', book.name), backupBanner(), installHint(),
+  return h('div', null, bookHeader('Home', book.name), backupBanner(), installHint(), wDueBanner(book),
     h('section', { class: 'card hero' },
       h('div', { class: 'irow' }, h('div', { class: 'lbl' }, 'Net Worth'),
         h('button', { class: 'eye', 'aria-pressed': hidden(), 'aria-label': hidden() ? 'Show Net Worth' : 'Hide Net Worth', onclick: () => { setHidden(!hidden()); route(); } }, hidden() ? 'Show' : 'Hide')),
@@ -294,6 +315,25 @@ function pageDashboard() {
     h('div', { class: 'small' }, 'Prices and NAVs are the last ones saved by your phone. Live refresh arrives in a later phase.'));
 }
 
+// ---- sorting of cards (by opening date by default) ----
+let sortMode = 'new'; try { sortMode = localStorage.getItem('arthik.sort') || 'new'; } catch {}
+const SORTS = [['new', 'Opening date · newest first'], ['old', 'Opening date · oldest first'], ['val', 'Value · highest first'], ['name', 'Name · A to Z']];
+function openDate(it) {
+  const s = it.src; if (!s) return null;
+  const d = s.startDate ?? s.accountOpenDate ?? s.policyStartDate;
+  if (d) return d;
+  const e = (s.entries || s.installments || s.deposits || s.contributions || []).map(x => x.purchaseDate ?? x.entryDate ?? x.installmentDate ?? x.depositDate ?? x.contributionDate).filter(Boolean);
+  return e.length ? Math.min(...e) : (s.lastUpdatedAt ?? s.lastUpdatedByUserAt ?? null);
+}
+function sortItems(items) {
+  const a = items.slice(), nm = (x, y) => String(x.name).localeCompare(String(y.name));
+  if (sortMode === 'val') return a.sort((x, y) => y.value - x.value);
+  if (sortMode === 'name') return a.sort(nm);
+  const dir = sortMode === 'old' ? 1 : -1;
+  return a.sort((x, y) => { const dx = openDate(x), dy = openDate(y); if (dx == null && dy == null) return nm(x, y); if (dx == null) return 1; if (dy == null) return -1; return dx === dy ? nm(x, y) : (dx - dy) * dir; });
+}
+const sortBar = () => h('div', { class: 'sortbar' }, h('label', { class: 'small' }, 'Sort by '), h('select', { 'aria-label': 'Sort cards by', onchange: e => { sortMode = e.target.value; try { localStorage.setItem('arthik.sort', sortMode); } catch {} route(); } }, SORTS.map(([v, l]) => h('option', { value: v, selected: v === sortMode }, l))));
+const backLink = (href, label) => h('a', { href, class: 'btn ghost back' }, '← ' + label);
 function itemCard(it, key) {
   const ed = canEdit() && key && WSPEC[key] && it.src;
   const cdef = CATS.find(x => x.key === key);
@@ -301,25 +341,31 @@ function itemCard(it, key) {
     it.excluded ? h('div', { class: 'excl' }, 'Not in Net Worth') : null,
     h('div', { class: 'irow' }, h('div', { class: 'iname' }, cdef ? h('img', { class: 'iill', src: 'icons/ill/' + cdef.ill + '.svg', alt: '', width: 36, height: 36 }) : null, it.name), h('div', { class: 'ival' }, money(it.value))),
     it.sub ? h('div', { class: 'isub' }, it.sub) : null,
+    openDate(it) && ['new', 'old'].includes(sortMode) ? h('div', { class: 'iline dim' }, 'Opened ' + fmtDate(openDate(it))) : null,
     (it.lines || []).map(l => h('div', { class: 'iline' }, l)));
 }
 
 function pageCategory(key) {
   const c = computed(), cat = c.byKey[key] || c.cats[0];
-  return h('div', null, bookHeader(cat.label, 'Wealth'),
+  return h('div', null, backLink('#/dashboard', 'Home'), bookHeader(cat.label, 'Wealth'),
     h('section', null, h('div', { class: 'lbl' }, 'Counted toward Net Worth'), h('div', { class: 'big2' }, money(cat.total))),
     canEdit() && WSPEC[cat.key] ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => openWealth(cat.key, null) }, '+ Add ' + WSPEC[cat.key].noun) : null,
     canEdit() && cat.key === 'cash' ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: openCash }, 'Update cash in hand') : null,
-    cat.items.length ? h('div', { class: 'list' }, cat.items.sort((a, b) => b.value - a.value).map(it => itemCard(it, cat.key))) : h('p', { class: 'empty' }, canEdit() ? 'Nothing here yet. Use the button above to add one.' : 'Nothing here yet.'),
-    h('a', { href: '#/dashboard', class: 'btn ghost' }, '← Dashboard'));
+    cat.items.length > 1 ? sortBar() : null,
+    cat.items.length ? h('div', { class: 'list' }, sortItems(cat.items).map(it => itemCard(it, cat.key))) : h('p', { class: 'empty' }, canEdit() ? 'Nothing here yet. Use the button above to add one.' : 'Nothing here yet.'),
+    );
 }
 
-function pageLiabilities() {
-  const c = computed();
-  return h('div', null, bookHeader('Liabilities', 'Loans and dues'),
-    h('section', null, h('div', { class: 'lbl' }, 'Total outstanding'), h('div', { class: 'big2' }, money(c.liabTotal))),
-    canEdit() ? h('div', { class: 'row', style: { margin: '0 0 12px' } }, h('button', { class: 'btn primary', onclick: () => openWealth('liability', null) }, '+ Add liability'), h('button', { class: 'btn primary', onclick: () => openWealth('loan', null) }, '+ Add loan (EMI schedule)')) : null,
-    c.liabilities.length ? h('div', { class: 'list' }, c.liabilities.sort((a, b) => b.value - a.value).map(l => itemCard({ ...l, sub: (l.kind === 'Loan' ? 'Loan · ' : '') + (l.sub || '') }, l.key))) : h('p', { class: 'empty' }, 'No liabilities.'));
+const isCard = l => String(l.src && l.src.liabilityType || '').toLowerCase().replace(/[^a-z]/g, '') === 'creditcard';
+function pageLiabilities(cards) {
+  const c = computed(), list = c.liabilities.filter(l => isCard(l) === cards), total = list.filter(l => !l.excluded).reduce((a, l) => a + l.value, 0);
+  return h('div', null, bookHeader(cards ? 'Credit cards' : 'Liabilities', cards ? 'Card dues' : 'Loans and other dues'),
+    h('section', null, h('div', { class: 'lbl' }, 'Total outstanding'), h('div', { class: 'big2' }, money(total))),
+    canEdit() ? h('div', { class: 'row', style: { margin: '0 0 12px' } },
+      cards ? h('button', { class: 'btn primary', onclick: () => openWealth('liability', null, { liabilityType: 'CREDIT_CARD' }) }, '+ Add credit card')
+        : [h('button', { class: 'btn primary', onclick: () => openWealth('liability', null, { liabilityType: 'PERSONAL_LOAN' }) }, '+ Add liability'), h('button', { class: 'btn primary', onclick: () => openWealth('loan', null) }, '+ Add loan (EMI schedule)')]) : null,
+    list.length > 1 ? sortBar() : null,
+    list.length ? h('div', { class: 'list' }, sortItems(list).map(l => itemCard({ ...l, sub: (l.kind === 'Loan' ? 'Loan · ' : '') + (l.sub || '') }, l.key))) : h('p', { class: 'empty' }, cards ? 'No credit cards.' : 'No liabilities.'));
 }
 
 function pageGoals() {
@@ -337,7 +383,8 @@ function pageRent() {
   const c = computed();
   return h('div', null, bookHeader('Rent receivable', 'Tracking only — not in Net Worth'),
     canEdit() ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => openWealth('rent', null) }, '+ Add rented property') : null,
-    c.rent.length ? h('div', { class: 'list' }, c.rent.map(r => {
+    c.rent.length > 1 ? sortBar() : null,
+    c.rent.length ? h('div', { class: 'list' }, sortItems(c.rent.map(r => ({ src: r, name: r.propertyName, value: r.monthlyRent }))).map(x => x.src).map(r => {
       const pays = (r.payments || []).filter(p => p.entryType === 'RENT').sort((a, b) => b.receivedDate - a.receivedDate);
       return h('div', { class: 'item' + (canEdit() ? ' clk' : ''), role: canEdit() ? 'button' : null, tabindex: canEdit() ? 0 : null, onclick: canEdit() ? () => openWealth('rent', { src: r }) : null }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.propertyName), h('div', { class: 'ival' }, money(r.monthlyRent) + '/mo')),
         h('div', { class: 'isub' }, [r.tenantName, r.tenantPhone].filter(Boolean).join(' · ')),
@@ -500,9 +547,9 @@ function openEntry(t) {
     } catch (e) { fail(e.message + ' Your entry was NOT saved. You can try again.'); save.disabled = false; save.textContent = isEdit ? 'Save changes' : 'Save entry'; }
   };
   const del = isEdit ? h('button', { type: 'button', class: 'btn danger', onclick: async () => {
-    if (!confirm('Delete this entry? This cannot be undone.')) return;
+    if (!confirm('Delete this entry? You can bring it back from Settings > Recently deleted.')) return;
     del.disabled = true;
-    try { await mutate(d => { const b = findBook(d, bname); if (!b) return; b.transactions = (b.transactions || []).filter(x => x.localId !== t.localId); }); closeModal(); toast('Entry deleted'); route(); }
+    try { await mutate(d => { const b = findBook(d, bname); if (!b) return; const x = (b.transactions || []).find(y => y.localId === t.localId); if (x) { x.isDeleted = true; x.deletedAt = Date.now(); } }); closeModal(); toast('Entry deleted · restore it from Settings'); route(); }
     catch (e) { fail(e.message + ' Nothing was deleted.'); del.disabled = false; }
   } }, 'Delete') : null;
   const sheet = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': isEdit ? 'Edit entry' : 'Add entry' },
@@ -717,7 +764,11 @@ const WSPEC = {
     entries: { key: 'deposits', label: 'Deposits, interest and withdrawals', dateKey: 'depositDate', amtLabel: 'Amount', addLabel: 'Add entry', typeKey: 'type', types: [['DEPOSIT', 'Deposit'], ['INTEREST', 'Interest credited'], ['DEDUCTION', 'Withdrawal']] },
     make: () => ({ name: '', bankOrPostOfficeName: '', accountNumber: '', accountOpenDate: Date.now(), deposits: [], isArchived: false }) },
   epf: { arr: 'epfAccounts', nameKey: 'name', autoName: ['companyName', 'pfAccountNumber'], autoHint: 'the company name or the PF account number', noun: 'EPF account', fields: [
-      F.text('companyName', 'Company name', { ph: 'e.g. Acme Ltd' }), F.text('pfAccountNumber', 'PF account no.'), F.text('uan', 'UAN (optional)'), F.date('accountOpenDate', 'Account opened on', { req: 1 }) ],
+      F.text('companyName', 'Company name', { ph: 'e.g. Acme Ltd' }), F.text('pfAccountNumber', 'PF account no.'), F.text('uan', 'UAN (optional)'), F.date('accountOpenDate', 'Account opened on', { req: 1 }),
+      F.num('monthlyEeContribution', 'Monthly employee + employer amount (optional)', { nullable: 1, rs: 1 }), F.num('monthlyPensionContribution', 'Monthly pension amount (optional)', { nullable: 1, rs: 1 }), F.num('_day', 'Posted on day of month (1-31, optional)', { nullable: 1, int: 1 }) ],
+    pre: st => { st._day = st.recurringDepositDate ? String(new Date(st.recurringDepositDate).getDate()) : ''; },
+    check: rec => rec._day != null && (rec._day < 1 || rec._day > 31) ? 'The day of month must be between 1 and 31.' : '',
+    post: rec => { if (rec._day) { const n = new Date(), d = new Date(n.getFullYear(), n.getMonth(), 1, 12); d.setDate(Math.min(rec._day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); rec.recurringDepositDate = d.getTime(); } else rec.recurringDepositDate = null; delete rec._day; },
     entries: { key: 'contributions', label: 'Contributions', dateKey: 'contributionDate', amtLabel: 'Amount', addLabel: 'Add contribution', typeKey: 'tileType', types: [['EMPLOYEE_EMPLOYER', 'Employee + employer'], ['PENSION', 'Pension']], extra: { isTransfer: false } },
     make: () => ({ name: '', companyName: '', uan: '', pfAccountNumber: '', accountOpenDate: Date.now(), monthlyEeContribution: null, monthlyPensionContribution: null, recurringDepositDate: null, contributions: [], isArchived: false }) },
   bank: { arr: 'bankBalances', nameKey: 'bankName', noun: 'bank balance', fields: [
@@ -729,22 +780,28 @@ const FREQ3 = [['MONTHLY', 'Monthly'], ['QUARTERLY', 'Quarterly'], ['ANNUALLY', 
 Object.assign(WSPEC, {
   nps: { arr: 'npsAccounts', nameKey: 'name', noun: 'NPS account', fields: [
       F.text('name', 'Name', { req: 1, ph: 'e.g. NPS Tier 1' }), F.text('pran', 'PRAN (optional)'), F.pick('pfm', 'Pension fund manager (optional)', 'pfm'), F.chips('tier', 'Tier', [[1, 'Tier 1'], [2, 'Tier 2']]),
-      F.num('currentValue', 'Current value', { req: 1, rs: 1, zero: 1 }), F.num('monthlyContribution', 'Monthly contribution (optional)', { nullable: 1 }) ],
+      F.num('currentValue', 'Current value', { req: 1, rs: 1, zero: 1 }), F.num('monthlyContribution', 'Monthly contribution (optional)', { nullable: 1 }), F.num('recurringDayOfMonth', 'Contribution day of month (optional)', { nullable: 1, int: 1 }) ],
+    check: rec => rec.recurringDayOfMonth != null && (rec.recurringDayOfMonth < 1 || rec.recurringDayOfMonth > 31) ? 'The day of month must be between 1 and 31.' : '',
     post: (rec, st, src) => { rec.lastUpdatedAt = Date.now(); },
     make: () => ({ name: '', pran: '', pfm: '', tier: 1, currentValue: '', lastUpdatedAt: Date.now(), monthlyContribution: null, recurringDayOfMonth: null, lastContributionDate: null, isArchived: false }) },
   apy: { arr: 'apyAccounts', nameKey: 'name', noun: 'APY account', fields: [
       F.text('name', 'Name', { req: 1, ph: 'e.g. Atal Pension Yojana' }), F.text('pran', 'PRAN (optional)'), F.pick('bankName', 'Bank (optional)', 'bank'), F.text('accountNumber', 'Account no. (optional)'), F.text('ifsc', 'IFSC (optional)'),
       F.num('monthlyContribution', 'Monthly contribution', { req: 1, min: 0.01, rs: 1 }), F.chips('pensionSlab', 'Pension per month', [1000, 2000, 3000, 4000, 5000].map(v => [v, '₹' + v])),
-      F.date('startDate', 'Started on', { req: 1 }), F.num('totalContributedSoFar', 'Total contributed so far', { req: 1, rs: 1, zero: 1 }) ],
+      F.date('startDate', 'Started on', { req: 1 }), F.num('recurringDayOfMonth', 'Contribution day of month (optional)', { nullable: 1, int: 1 }), F.num('totalContributedSoFar', 'Total contributed so far', { req: 1, rs: 1, zero: 1 }) ],
+    check: rec => rec.recurringDayOfMonth != null && (rec.recurringDayOfMonth < 1 || rec.recurringDayOfMonth > 31) ? 'The day of month must be between 1 and 31.' : '',
     make: () => ({ name: '', pran: '', bankName: '', accountNumber: '', ifsc: '', monthlyContribution: '', pensionSlab: 1000, startDate: Date.now(), totalContributedSoFar: '', lastContributionDate: null, recurringDayOfMonth: null, isArchived: false }) },
   mf: { arr: 'mutualFunds', nameKey: 'schemeName', noun: 'mutual fund', fields: [
       F.text('schemeName', 'Fund name', { req: 1, ph: 'e.g. Parag Parikh Flexi Cap' }), F.text('fundHouse', 'Fund house (optional)'), F.pick('platformName', 'Platform (optional)', 'platform'), F.text('folioNumber', 'Folio no. (optional)'), F.text('schemeCode', 'AMFI scheme code (optional)'),
-      F.num('lastFetchedNav', 'Latest NAV (update it now and then)', { nullable: 1 }) ],
+      F.num('lastFetchedNav', 'Latest NAV (update it now and then)', { nullable: 1 }),
+      F.num('_sipAmt', 'Monthly SIP amount (optional)', { nullable: 1, rs: 1 }), F.date('_sipStart', 'SIP first date', { opt: 1 }), F.chips('_sipHeld', 'SIP status', [['false', 'Running'], ['true', 'Held (paused)']]) ],
+    pre: st => { st._sipAmt = st.sip ? String(st.sip.sipAmount) : ''; st._sipStart = st.sip ? st.sip.startDate : null; st._sipHeld = String(!!(st.sip && st.sip.isHeld)); },
+    check: rec => rec._sipAmt != null && rec._sipAmt > 0 && !rec._sipStart ? 'Choose the SIP first date (the day of month it is taken).' : '',
     entries: { key: 'entries', label: 'Purchases', inputs: [{ k: 'invested', label: 'Amount invested' }, { k: 'nav', label: 'NAV on that day' }], addLabel: 'Add purchase', typeKey: 'isSip', boolType: 1, types: [['false', 'One-time'], ['true', 'SIP']],
       build: ne => { const inv = +ne.vals.invested, nav = +ne.vals.nav; if (!(inv > 0) || !(nav > 0)) return 'Enter the amount invested and the NAV (both above zero).';
         return { investedAmount: Math.round(inv * 100) / 100, navAtPurchase: nav, unitsAllotted: Math.round(inv / nav * 1000) / 1000, purchaseDate: tsOf(ne.date), isSip: ne.type === 'true' }; },
       dateKey: 'purchaseDate', line: e => `${money(e.investedAmount)} · ${e.unitsAllotted} units @ ${e.navAtPurchase}`, sipKey: 'isSip' },
-    post: (rec, st, src) => { const old = src ? src.lastFetchedNav : null; if (rec.lastFetchedNav != null && rec.lastFetchedNav !== old) rec.lastFetchedAt = Date.now(); if (rec.lastFetchedNav == null) rec.lastFetchedAt = null; },
+    post: (rec, st, src) => { const old = src ? src.lastFetchedNav : null; if (rec.lastFetchedNav != null && rec.lastFetchedNav !== old) rec.lastFetchedAt = Date.now(); if (rec.lastFetchedNav == null) rec.lastFetchedAt = null;
+      if (rec._sipAmt > 0) rec.sip = { ...((src && src.sip) || {}), sipAmount: rec._sipAmt, startDate: rec._sipStart, isHeld: rec._sipHeld === 'true', lastConfirmedDate: (src && src.sip && src.sip.lastConfirmedDate) || null }; else rec.sip = null; delete rec._sipAmt; delete rec._sipStart; delete rec._sipHeld; },
     make: () => ({ schemeCode: '', schemeName: '', folioNumber: '', fundHouse: '', platformName: '', lastFetchedNav: null, lastFetchedAt: null, entries: [], sip: null, isArchived: false }) },
   demat: { arr: 'dematHoldings', nameKey: 'stockSymbol', noun: 'share holding', fields: [
       F.text('stockSymbol', 'Share / stock symbol', { req: 1, ph: 'e.g. TCS' }), F.chips('exchangeCode', 'Exchange', [['NSE', 'NSE'], ['BSE', 'BSE']]), F.pick('accountName', 'Demat account / broker (optional)', 'broker'),
@@ -834,9 +891,14 @@ Object.assign(WSPEC, {
     make: () => ({ name: '', targetAmount: '', targetDate: null, linkedAssets: [], isArchived: false }) },
   rent: { arr: 'rentReceivables', nameKey: 'propertyName', noun: 'rented property', noNW: 1, fields: [
       F.text('propertyName', 'Property', { req: 1, ph: 'e.g. Rohini flat' }), F.text('tenantName', 'Tenant name (optional)'), F.text('tenantPhone', 'Tenant phone (optional)'),
-      F.num('monthlyRent', 'Monthly rent', { req: 1, min: 0.01, rs: 1 }), F.num('securityDeposit', 'Security deposit', { zero: 1, rs: 1 }), F.date('startDate', 'Tenant moved in on', { req: 1 }) ],
+      F.num('monthlyRent', 'Monthly rent', { req: 1, min: 0.01, rs: 1 }), F.num('securityDeposit', 'Security deposit', { zero: 1, rs: 1 }), F.date('startDate', 'Tenant moved in on', { req: 1 }),
+      F.chips('_link', 'When rent is received, also add it as income to (optional)', () => [['', 'Nowhere'], ...(S.data.books || []).filter(b => b.bookType === 'EXPENSE' && !b.isArchived).flatMap(b => (b.accounts || []).filter(a => !a.isArchived).map(a => [b.name + '||' + a.name, a.name + ' · ' + b.name]))]) ],
+    pre: st => { st._link = st.linkedAccount ? st.linkedAccount.bookName + '||' + st.linkedAccount.accountName : ''; },
+    post: rec => { const [bn, an] = String(rec._link || '').split('||'); rec.linkedAccount = rec._link && an ? { bookName: bn, accountName: an } : null; delete rec._link; },
     entries: { key: 'payments', label: 'Rent and deposit received', dateKey: 'receivedDate', amtLabel: 'Amount', addLabel: 'Add received', typeKey: 'entryType', types: [['RENT', 'Rent'], ['SECURITY', 'Security deposit']], mode: { opts: [['CASH', 'Cash'], ['TRANSFER', 'Bank transfer'], ['UPI', 'UPI']] },
-      build: ne => { const v = Math.round(parseFloat(ne.vals.amt) * 100) / 100; if (!(v > 0)) return 'Enter the amount received (above zero).'; const t = tsOf(ne.date); return { amount: v, paymentMode: ne.mode, dueDate: t, receivedDate: t, entryType: ne.type }; },
+      build: (ne, st, ents) => { const v = Math.round(parseFloat(ne.vals.amt) * 100) / 100; if (!(v > 0)) return 'Enter the amount received (above zero).'; const t = tsOf(ne.date); let due = t;
+        if (ne.type === 'RENT' && typeof st.startDate === 'number') { const pd = rentPending({ startDate: st.startDate, payments: ents }, Date.now()).pending; if (pd.length) due = pd[0]; }
+        return { amount: v, paymentMode: ne.mode, dueDate: due, receivedDate: t, entryType: ne.type }; },
       line: e => money(e.amount) + ' · ' + String(e.paymentMode || '').toLowerCase() },
     make: () => ({ propertyName: '', tenantName: '', tenantPhone: '', monthlyRent: '', securityDeposit: 0, startDate: Date.now(), payments: [], isArchived: false }) },
 });
@@ -875,12 +937,13 @@ function toggleRow(label, get, set) {
   sw.onclick = () => { set(!get()); paint(); }; paint();
   return h('div', { class: 'switchrow' }, h('span', null, label), sw);
 }
-function openWealth(key, it) {
+function openWealth(key, it, preset) {
   const spec = WSPEC[key], book = currentBook(), isEdit = !!it, src = isEdit ? it.src : null;
   const idOf = spec.idOf || (x => x[spec.nameKey]);
   const arr0 = book[spec.arr] || [], idx0 = isEdit ? arr0.indexOf(src) : -1, origName = isEdit ? idOf(src) : null;
   const st = JSON.parse(JSON.stringify(isEdit ? src : spec.make()));
   if (spec.pre) spec.pre(st);
+  if (preset && !isEdit) Object.assign(st, preset);
   st._auto = !isEdit && !!spec.auto;
   if (spec.fields.some(f => f.t === 'tenure')) { const tm = +st.tenureMonths || 0; st._ty = tm ? String(Math.floor(tm / 12) || '') : ''; st._tm = tm % 12 ? String(tm % 12) : ''; st._td = +st.tenureExtraDays ? String(st.tenureExtraDays) : ''; }
   const ds = {}; spec.fields.forEach(f => { if (f.t === 'date') ds[f.k] = st[f.k] ? dstr(st[f.k]) : ''; if (f.t === 'num' && st[f.k] != null) st[f.k] = String(st[f.k]); if (f.t === 'chips' && st[f.k] != null && typeof f.opts !== 'function' && f.opts.some(o => typeof o[0] === 'string') && typeof st[f.k] !== 'string') st[f.k] = String(st[f.k]); });
@@ -964,15 +1027,15 @@ function openWealth(key, it) {
       api.run(save, 'Saving…', () => mutateWealth((b, d) => {
         newPicks.forEach(({ kind, name }) => { d.customLists = d.customLists || {}; d.customLists[kind] = d.customLists[kind] || []; if (!optionList(kind, d).some(x => sameName(x, name))) d.customLists[kind].push(name); });
         b[spec.arr] = b[spec.arr] || []; let tgt;
-        if (isEdit) { tgt = b[spec.arr][idx0]; if (!tgt || idOf(tgt) !== origName) tgt = b[spec.arr].find(x => idOf(x) === origName); if (!tgt) throw new Error('This item was changed or removed on another device.'); }
+        if (isEdit) { tgt = b[spec.arr][idx0]; if (!tgt || idOf(tgt) !== origName || tgt.isArchived) tgt = b[spec.arr].find(x => idOf(x) === origName && !x.isArchived); if (!tgt) throw new Error('This item was changed or removed on another device.'); }
         else { tgt = spec.make(); b[spec.arr].push(tgt); }
         Object.assign(tgt, rec);
       })).then(ok => ok && toast(isEdit ? 'Saved ✓' : 'Added ✓'));
     };
     const extra = [];
     if (isEdit) { const del = h('button', { type: 'button', class: 'btn danger' }, 'Delete');
-      del.onclick = () => { if (!confirm('Delete “' + origName + '”? This removes it and its history.')) return;
-        api.run(del, 'Deleting…', () => mutateWealth(b => { const a = b[spec.arr] || []; let i = a[idx0] && idOf(a[idx0]) === origName ? idx0 : a.findIndex(x => idOf(x) === origName); if (i < 0) throw new Error('This item was already removed.'); a.splice(i, 1); })).then(ok => ok && toast('Deleted')); }; extra.push(del); }
+      del.onclick = () => { if (!confirm('Delete “' + origName + '”? It leaves your Net Worth, but you can bring it back from Settings > Recently deleted.')) return;
+        api.run(del, 'Deleting…', () => mutateWealth(b => { const a = b[spec.arr] || []; let i = a[idx0] && idOf(a[idx0]) === origName && !a[idx0].isArchived ? idx0 : a.findIndex(x => idOf(x) === origName && !x.isArchived); if (i < 0) throw new Error('This item was already removed.'); a[i].isArchived = true; a[i].deletedAt = Date.now(); })).then(ok => ok && toast('Deleted · restore it from Settings')); }; extra.push(del); }
     return h('div', null, fieldsBox, extraBox, entBox, spec.noNW ? null : toggleRow('Count in Net Worth', () => !st.excludeFromNetWorth, v => { st.excludeFromNetWorth = !v; }), h('div', { class: 'actions' }, save, extra));
   });
 }
@@ -988,11 +1051,12 @@ function openCash() {
 }
 function pageExpenseDashboard() {
   const c = computed(), book = currentBook();
+  const dn = dueRules(book).length;
   const oldest = c.txs.length ? c.txs[c.txs.length - 1].occurredAt : Date.now(), od = new Date(oldest), nd = new Date();
   const minOff = (od.getFullYear() - nd.getFullYear()) * 12 + od.getMonth() - nd.getMonth();
   const cur = em === 0, ml = monthLabel(em);
   const go = d => h('button', { class: 'mnav', 'aria-label': d < 0 ? 'Previous month' : 'Next month', disabled: d < 0 ? em <= minOff : em >= 0, onclick: () => { em = Math.max(minOff, Math.min(0, em + d)); route(); } }, d < 0 ? '‹' : '›');
-  return h('div', null, bookHeader('Dashboard', book.name), backupBanner(), installHint(),
+  return h('div', null, bookHeader('Home', book.name), backupBanner(), installHint(), dn && canEdit() ? h('a', { class: 'banner', href: '#/recurring' }, h('b', null, dn + ' repeating entr' + (dn > 1 ? 'ies are' : 'y is') + ' due.'), ' Tap to review and record.') : null,
     h('div', { class: 'monthbar' }, go(-1), h('div', { class: 'mlabel' }, ml, cur ? '' : h('button', { class: 'link', onclick: () => { em = 0; route(); } }, 'Back to this month')), go(1)),
     h('section', { class: 'card hero' }, h('div', { class: 'lbl' }, cur ? 'This month spent' : ml + ' spent'), h('div', { class: 'big' }, money(c.month)),
       h('div', { class: 'hsub' }, cur ? h('span', null, 'Today ', h('b', { class: 'down' }, money(c.today))) : null, h('span', null, (cur ? 'Income this month ' : 'Income '), h('b', { class: 'up' }, money(c.monthIncome))))),
@@ -1068,12 +1132,234 @@ function pageBudgets() {
 function download(name, text) {
   const a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'application/json' })), download: name }); document.body.append(a); a.click(); a.remove();
 }
+
+// ---------- Recurring rules (Expense book): list, edit, and the "due now" popup ----------
+const FREQS = [['DAILY', 'Daily'], ['WEEKLY', 'Weekly'], ['MONTHLY', 'Monthly'], ['YEARLY', 'Yearly']];
+const SNOOZES = [['2h', '2 hours', 2 * 3600e3], ['8h', '8 hours', 8 * 3600e3], ['1d', '1 day', 86400e3], ['3d', '3 days', 3 * 86400e3], ['1w', '1 week', 7 * 86400e3]];
+function addMonthsClamp(ts, m) { const d = new Date(ts), day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + m); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return d.getTime(); }
+function stepRule(r) { const n = Math.max(1, +r.interval || 1), t = r.nextRunAt;
+  if (r.frequency === 'DAILY') return t + n * 86400000 + (new Date(t).getTimezoneOffset() - new Date(t + n * 86400000).getTimezoneOffset()) * 60000;
+  if (r.frequency === 'WEEKLY') return stepRule({ ...r, frequency: 'DAILY', interval: 7 * n });
+  return addMonthsClamp(t, r.frequency === 'YEARLY' ? 12 * n : n); }
+const ruleLabel = r => { const n = +r.interval || 1, u = { DAILY: 'day', WEEKLY: 'week', MONTHLY: 'month', YEARLY: 'year' }[r.frequency] || 'month'; return n === 1 ? 'Every ' + u : 'Every ' + n + ' ' + u + 's'; };
+const liveRules = b => (b.recurringRules || []).filter(r => !r.isDeleted);
+const isDue = (r, now = Date.now()) => !r.isPaused && !r.isDeleted && r.nextRunAt <= now && (!r.endDate || r.nextRunAt <= r.endDate);
+const sameRule = (a, b) => a.localId != null && b.localId != null ? a.localId === b.localId : (a.name === b.name && a.startDate === b.startDate);
+const snoozeKey = (bn, r) => bn + '|' + (r.localId != null ? r.localId : r.name + '|' + r.startDate);
+const snoozes = () => { try { return JSON.parse(localStorage.getItem('arthik.snooze') || '{}'); } catch { return {}; } };
+const setSnooze = (keys, ms) => { try { const s = snoozes(), now = Date.now(); Object.keys(s).forEach(k => { if (s[k] < now) delete s[k]; }); keys.forEach(k => { s[k] = now + ms; }); localStorage.setItem('arthik.snooze', JSON.stringify(s)); } catch {} };
+const dueSeen = new Set();
+function dueRules(book) { const sn = snoozes(), now = Date.now(); return liveRules(book).filter(r => isDue(r, now) && !(sn[snoozeKey(book.name, r)] > now)).sort((a, b) => a.nextRunAt - b.nextRunAt); }
+function recordRule(rule, all) {  // posts one entry (or every missed one) and moves the rule on
+  const bname = currentBook().name, expect = rule.nextRunAt; let count = 0;
+  return mutateBook(b => { b.transactions = b.transactions || [];
+    const r = (b.recurringRules || []).find(x => sameRule(x, rule)); if (!r || r.isDeleted) throw new Error('This rule was removed on another device.'); if (r.nextRunAt !== expect) throw new Error('This one was already recorded on another device.');
+    const now = Date.now(); count = 0;
+    do { b.transactions.push({ localId: nextId(b.transactions), type: r.type, amount: r.amount, accountLocalId: r.accountLocalId, toAccountLocalId: r.type === 'TRANSFER' ? r.toAccountLocalId : null, categoryLocalId: r.type === 'TRANSFER' ? null : (r.categoryLocalId == null ? null : r.categoryLocalId), note: r.note || r.name, occurredAt: r.nextRunAt });
+      r.nextRunAt = stepRule(r); count++; } while (all && count < 400 && isDue(r, now));
+  }).then(() => count);
+}
+function showDue() {
+  const book = currentBook(); if (!book || book.bookType !== 'EXPENSE' || !canEdit()) return;
+  const list = dueRules(book); if (!list.length) { closeModal(); return; }
+  const acc = Object.fromEntries((book.accounts || []).map(a => [a.localId, a.name])), now = Date.now();
+  const occ = r => { let n = 0, t = { ...r }; while (isDue(t, now) && n < 400) { n++; t.nextRunAt = stepRule(t); } return n; };
+  const total = list.reduce((a, r) => a + occ(r), 0);
+  sheetForm('Due now', api => {
+    let sn = '1d'; const sel = h('select', { 'aria-label': 'Remind me again in', onchange: e => { sn = e.target.value; } }, SNOOZES.map(([v, l]) => h('option', { value: v, selected: v === sn }, l)));
+    const again = () => { route(); showDue(); };
+    const rows = list.map(r => { const btn = h('button', { type: 'button', class: 'btn primary' }, 'Record');
+      btn.onclick = () => { btn.disabled = true; btn.textContent = '…'; recordRule(r, false).then(() => { toast('Recorded ✓'); again(); }).catch(e => { api.fail(e.message + ' Nothing was changed.'); btn.disabled = false; btn.textContent = 'Record'; }); };
+      const n = occ(r);
+      return h('div', { class: 'item' }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.name), h('div', { class: 'ival ' + (TYPE[r.type] || {}).cls }, money(r.amount))),
+        h('div', { class: 'isub' }, (TYPE[r.type] ? TYPE[r.type].label : r.type) + ' · due ' + fmtDate(r.nextRunAt) + (acc[r.accountLocalId] ? ' · ' + niceName(acc[r.accountLocalId]) : '') + (n > 1 ? ' · ' + n + ' missed' : '')), h('div', { class: 'actions' }, btn)); });
+    const all = h('button', { type: 'button', class: 'btn' }, 'Record all (' + total + ')');
+    all.onclick = async () => { all.disabled = true; all.textContent = 'Recording…'; try { for (const r of list) await recordRule(r, true); toast('All recorded ✓'); closeModal(); route(); } catch (e) { api.fail(e.message + ' Some may already be recorded; check Entries.'); all.disabled = false; all.textContent = 'Record all (' + total + ')'; route(); showDue(); } };
+    const later = h('button', { type: 'button', class: 'btn ghost' }, 'Later');
+    later.onclick = () => { setSnooze(list.map(r => snoozeKey(book.name, r)), SNOOZES.find(x => x[0] === sn)[2]); closeModal(); toast('Okay, I will remind you again'); };
+    return h('div', null, h('p', { class: 'small' }, 'These repeating entries are due. Nothing is added until you tap Record.'), h('div', { class: 'list' }, rows), h('div', { class: 'actions' }, all),
+      h('div', { class: 'flbl' }, 'Not now? Remind me again in'), h('div', { class: 'row' }, sel, later));
+  });
+}
+function pageRecurring() {
+  const book = currentBook(), rules = liveRules(book).sort((a, b) => (a.isPaused ? 1 : 0) - (b.isPaused ? 1 : 0) || a.nextRunAt - b.nextRunAt), ed = canEdit();
+  const acc = Object.fromEntries((book.accounts || []).map(a => [a.localId, a.name]));
+  return h('div', null, bookHeader('Recurring', 'Repeating entries'),
+    h('p', { class: 'small' }, 'Rules like rent, Netflix or a card bill. When one falls due, a pop-up asks you to record it. Nothing is added by itself.'),
+    ed ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => openRule(null) }, '+ New rule') : null,
+    rules.length ? h('div', { class: 'list' }, rules.map(r => { const ty = TYPE[r.type] || TYPE.EXPENSE, due = isDue(r);
+      return h('div', { class: 'item' + (ed ? ' clk' : '') + (r.isPaused ? ' paused' : ''), role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openRule(r) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openRule(r); } : null },
+        h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.name, r.isPaused ? h('span', { class: 'ttag' }, 'Paused') : due ? h('span', { class: 'ttag down' }, 'Due') : null), h('div', { class: 'ival ' + ty.cls }, ty.sign + money(r.amount))),
+        h('div', { class: 'isub' }, ty.label + ' · ' + ruleLabel(r) + (acc[r.accountLocalId] ? ' · ' + niceName(acc[r.accountLocalId]) : '')),
+        h('div', { class: 'iline' }, (r.isPaused ? 'Next would be ' : 'Next: ') + fmtDate(r.nextRunAt) + (r.endDate ? ' · ends ' + fmtDate(r.endDate) : ''))); }))
+      : h('p', { class: 'empty' }, ed ? 'No recurring rules yet. Use “+ New rule”.' : 'No recurring rules yet.'));
+}
+function openRule(r) {
+  const book = currentBook(), isEdit = !!r, c = computed();
+  const accs = (book.accounts || []).filter(a => !a.isArchived || (r && (r.accountLocalId === a.localId || r.toAccountLocalId === a.localId)));
+  const cats = (book.categories || []).filter(x => !x.isArchived || (r && r.categoryLocalId === x.localId));
+  const st = r ? { ...r } : { type: 'EXPENSE', name: '', amount: '', accountLocalId: (accs.find(a => a.isDefault) || accs[0] || {}).localId, toAccountLocalId: null, categoryLocalId: null, note: '', frequency: 'MONTHLY', interval: 1, isPaused: false };
+  let nextD = dstr(r ? r.nextRunAt : Date.now()), endD = r && r.endDate ? dstr(r.endDate) : '';
+  sheetForm(isEdit ? 'Edit rule' : 'New recurring rule', api => {
+    const dyn = h('div', null);
+    const paint = () => { const tr = st.type === 'TRANSFER';
+      dyn.replaceChildren(
+        h('div', { class: 'flbl' }, tr ? 'From account' : 'Account'), chipRow(accs.map(a => [a.localId, niceName(a.name)]), () => st.accountLocalId, v => { st.accountLocalId = v; if (st.toAccountLocalId === v) st.toAccountLocalId = null; paint(); }),
+        tr ? h('div', { class: 'flbl' }, 'To account') : null, tr ? chipRow(accs.filter(a => a.localId !== st.accountLocalId).map(a => [a.localId, niceName(a.name)]), () => st.toAccountLocalId, v => { st.toAccountLocalId = v; }) : null,
+        !tr ? h('div', { class: 'flbl' }, 'Category (optional)') : null, !tr ? chipRow([[null, 'None'], ...cats.map(x => [x.localId, x.name])], () => st.categoryLocalId, v => { st.categoryLocalId = v; }, v => v == null ? null : catColors(c)[v]) : null); };
+    const mk = (label, key, ph, mode) => h('input', { type: 'text', inputmode: mode || null, value: st[key] == null ? '' : String(st[key]), placeholder: ph || '', 'aria-label': label, autocomplete: 'off', oninput: e => { st[key] = e.target.value; } });
+    const seg = h('div', { class: 'seg' }); const paintSeg = () => seg.replaceChildren(...[['EXPENSE', 'Expense'], ['INCOME', 'Income'], ['TRANSFER', 'Transfer']].map(([k, l]) => h('button', { type: 'button', class: 'segb ' + TYPE[k].cls + (st.type === k ? ' on' : ''), onclick: () => { st.type = k; paintSeg(); paint(); } }, l)));
+    paintSeg(); paint();
+    const save = h('button', { type: 'button', class: 'btn primary big' }, isEdit ? 'Save changes' : 'Add rule');
+    save.onclick = () => {
+      const name = String(st.name || '').trim(), amt = Math.round(parseFloat(String(st.amount).replace(/,/g, '')) * 100) / 100, iv = parseInt(st.interval, 10), tr = st.type === 'TRANSFER';
+      if (!name) return api.fail('Enter a name, like Netflix or Rent.'); if (!(amt > 0)) return api.fail('Enter an amount above zero.'); if (st.accountLocalId == null) return api.fail('Choose an account.');
+      if (tr && (st.toAccountLocalId == null || st.toAccountLocalId === st.accountLocalId)) return api.fail('Choose a different account to transfer to.');
+      if (!(iv >= 1 && iv <= 365)) return api.fail('“Repeat every” must be 1 or more.'); if (!nextD) return api.fail('Choose the ' + (isEdit ? 'next' : 'first') + ' date.');
+      const next = tsOf(nextD), end = endD ? tsOf(endD) : null; if (end && end < next) return api.fail('The end date is before the next date.');
+      const rec = { name, type: st.type, amount: amt, accountLocalId: st.accountLocalId, toAccountLocalId: tr ? st.toAccountLocalId : null, categoryLocalId: tr ? null : st.categoryLocalId, note: String(st.note || '').trim() || null, frequency: st.frequency, interval: iv, endDate: end, nextRunAt: next, isPaused: !!st.isPaused };
+      api.run(save, 'Saving…', () => mutateBook(b => { b.recurringRules = b.recurringRules || [];
+        if (isEdit) { const t = b.recurringRules.find(x => sameRule(x, r)); if (!t) throw new Error('This rule was removed on another device.'); Object.assign(t, rec); if (t.localId == null) t.localId = nextId(b.recurringRules); }
+        else b.recurringRules.push({ localId: nextId(b.recurringRules), ...rec, startDate: next }); })).then(ok => ok && toast(isEdit ? 'Saved ✓' : 'Rule added ✓'));
+    };
+    const extra = [];
+    if (isEdit) { const del = h('button', { type: 'button', class: 'btn danger' }, 'Delete');
+      del.onclick = () => { if (!confirm('Delete “' + r.name + '”? Entries it already made stay. You can bring the rule back from Settings > Recently deleted.')) return;
+        api.run(del, 'Deleting…', () => mutateBook(b => { const t = (b.recurringRules || []).find(x => sameRule(x, r)); if (!t) throw new Error('This rule was already removed.'); t.isDeleted = true; t.deletedAt = Date.now(); })).then(ok => ok && toast('Deleted · restore it from Settings')); }; extra.push(del); }
+    return h('div', null, seg, h('div', { class: 'flbl' }, 'Name'), mk('Name', 'name', 'e.g. Netflix, Rent'), h('div', { class: 'flbl' }, 'Amount'), mk('Amount', 'amount', '0', 'decimal'), dyn,
+      h('div', { class: 'flbl' }, 'Note (optional)'), mk('Note', 'note'), h('div', { class: 'flbl' }, 'Repeats'), chipRow(FREQS, () => st.frequency, v => { st.frequency = v; }),
+      h('div', { class: 'flbl' }, 'Repeat every (number)'), mk('Repeat every', 'interval', '1', 'numeric'),
+      h('div', { class: 'flbl' }, isEdit ? 'Next date' : 'First date'), h('input', { type: 'date', value: nextD, 'aria-label': 'Next date', oninput: e => { nextD = e.target.value; } }),
+      h('div', { class: 'flbl' }, 'Ends on (optional)'), h('input', { type: 'date', value: endD, 'aria-label': 'End date', oninput: e => { endD = e.target.value; } }),
+      isEdit ? toggleRow('Active (turn off to pause)', () => !st.isPaused, v => { st.isPaused = !v; }) : null, h('div', { class: 'actions' }, save, extra));
+  });
+}
+
+
+// ---------- Wealth: repeating items (RD, EPF, APY, NPS, SIP, Kametti, Rent) ----------
+const R_KEY = { FDMAT: 'fd', RDMAT: 'rd', PPF: 'ppf', LIAB: 'liability', INS: 'insurance', RD: 'rd', EPF_EE: 'epf', EPF_PEN: 'epf', APY: 'apy', NPS: 'nps', SIP: 'mf', KAMETTI: 'kametti', RENT: 'rent' };
+const wKey = (bn, it) => bn + '|W|' + it.type + '|' + it.id;
+const wDue = (book, ignoreSnooze) => { const sn = snoozes(), now = Date.now(); return allDue(book, now, S.data.rateHistory || []).filter(i => ignoreSnooze || !(sn[wKey(book.name, i)] > now)); };
+function wDueBanner(book) { const n = wDue(book, true).length; return n ? h('a', { class: 'banner', href: '#/recurring' }, h('b', null, n + ' repeating item' + (n > 1 ? 's are' : ' is') + ' due.'), ' Tap to review and record.') : null; }
+function showWealthDue(ignoreSnooze) {
+  const book = currentBook(); if (!book || book.bookType !== 'WEALTH' || !canEdit()) return;
+  const list = wDue(book, ignoreSnooze === true); if (!list.length) { closeModal(); return; }
+  sheetForm('Due now', api => {
+    let sn = '1d'; const sel = h('select', { 'aria-label': 'Remind me again in', onchange: e => { sn = e.target.value; } }, SNOOZES.map(([v, l]) => h('option', { value: v, selected: v === sn }, l)));
+    const run = (btn, label, fn) => { btn.disabled = true; const old = btn.textContent; btn.textContent = '…'; fn().then(() => { toast(label); route(); showWealthDue(ignoreSnooze); }).catch(e => { api.fail(e.message + ' Nothing was changed.'); btn.disabled = false; btn.textContent = old; }); };
+    const rows = list.map(it => {
+      const st = { amt: String(it.amount), nav: it.ref.lastFetchedNav != null ? String(it.ref.lastFetchedNav) : '', mode: 'TRANSFER', rate: String(it.rate ?? ''), months: String(it.tenure ?? ''), start: dstr(it.due) };
+      const inp = (label, key, mode) => h('input', { type: 'text', inputmode: mode || 'decimal', value: st[key], 'aria-label': label + ' for ' + it.name, autocomplete: 'off', oninput: e => { st[key] = e.target.value.replace(/,/g, ''); } });
+      const fl = (label, ctl) => h('div', null, h('div', { class: 'flbl' }, label), ctl);
+      const head = [h('div', { class: 'irow' }, h('div', { class: 'iname' }, it.name), h('div', { class: 'ival' }, it.type === 'LIAB' || it.type === 'INS' || it.type === 'PPF' || it.type === 'FDMAT' || it.type === 'RDMAT' ? money(it.amount) : money(it.amount))),
+        h('div', { class: 'isub' }, RTYPES[it.type] + ' · ' + (it.type === 'FDMAT' || it.type === 'RDMAT' ? 'matured ' : it.type === 'PPF' ? 'year ended ' : 'due ') + fmtDate(it.type === 'PPF' ? it.due - 1 : it.due) + (it.pend > 1 ? ' · ' + it.pend + ' pending' : ''))];
+      const btn = h('button', { type: 'button', class: 'btn primary' }, 'Record'), body = [];
+      if (it.type === 'FDMAT' || it.type === 'RDMAT') {
+        btn.textContent = 'Renew'; const no = h('button', { type: 'button', class: 'btn ghost' }, 'Don’t renew');
+        body.push(h('p', { class: 'small' }, 'Matured value ' + money(it.mv) + '. Check the new terms, then renew. The old one is closed.'),
+          h('div', { class: 'two' }, fl(it.type === 'RDMAT' ? 'New monthly instalment' : 'New amount', inp('Amount', 'amt')), fl('Rate % per year', inp('Rate', 'rate'))),
+          h('div', { class: 'two' }, fl('Tenure (months)', inp('Months', 'months', 'numeric')), fl('Starts on', h('input', { type: 'date', value: st.start, 'aria-label': 'Start date', oninput: e => { st.start = e.target.value; } }))),
+          h('div', { class: 'actions' }, btn, no));
+        btn.onclick = () => run(btn, 'Renewed ✓', () => mutateWealth((b, d) => confirmInBook(b, it, { amount: st.amt, rate: st.rate, months: st.months, start: tsOf(st.start) }, Date.now(), d)));
+        no.onclick = () => run(no, 'Okay, not renewing', () => mutateWealth(b => declineInBook(b, it)));
+      } else if (it.type === 'LIAB' || it.type === 'INS') {
+        btn.textContent = it.type === 'LIAB' ? 'Mark paid' : 'Premium paid';
+        body.push(h('div', { class: 'actions' }, btn)); btn.onclick = () => run(btn, 'Done ✓', () => mutateWealth((b, d) => confirmInBook(b, it, { amount: it.amount }, Date.now(), d)));
+      } else {
+        btn.textContent = it.type === 'RENT' ? 'Received' : it.type === 'PPF' ? 'Add interest' : 'Record';
+        const nav = it.needsNav ? fl('NAV', inp('NAV', 'nav')) : null;
+        const mode = it.type === 'RENT' ? fl('Paid by', h('select', { 'aria-label': 'How was it paid', onchange: e => { st.mode = e.target.value; } }, [['CASH', 'Cash'], ['TRANSFER', 'Bank transfer'], ['UPI', 'UPI']].map(([v, l]) => h('option', { value: v, selected: v === st.mode }, l)))) : null;
+        body.push(h('div', { class: 'two' }, fl(it.type === 'RENT' ? 'Rent received' : it.type === 'PPF' ? 'Interest credited' : 'Amount', inp('Amount', 'amt')), nav || mode || h('div')), h('div', { class: 'actions' }, btn));
+        btn.onclick = () => run(btn, 'Recorded ✓', () => mutateWealth((b, d) => confirmInBook(b, it, { amount: st.amt, nav: st.nav, mode: st.mode }, Date.now(), d)));
+      }
+      return h('div', { class: 'item' }, ...head, ...body); });
+    const later = h('button', { type: 'button', class: 'btn ghost' }, 'Later');
+    later.onclick = () => { setSnooze(list.map(i => wKey(book.name, i)), SNOOZES.find(x => x[0] === sn)[2]); closeModal(); toast('Okay, I will remind you again'); route(); };
+    return h('div', null, h('p', { class: 'small' }, 'These are due. Check the amount, then record. Nothing is added until you tap.'), h('div', { class: 'list' }, rows),
+      h('div', { class: 'flbl' }, 'Not now? Remind me again in'), h('div', { class: 'row' }, sel, later));
+  });
+}
+function pageWealthRecurring() {
+  const book = currentBook(), ed = canEdit(), items = [...recurringItems(book), ...eventItems(book, Date.now(), S.data.rateHistory || [])].sort((a, b) => (a.due ? 0 : 1) - (b.due ? 0 : 1) || (a.due || a.next) - (b.due || b.next)), dueN = items.filter(i => i.due).length;
+  return h('div', null, bookHeader('Recurring', 'Instalments, SIPs and rent'),
+    h('p', { class: 'small' }, 'Deposits and receipts that repeat every month. When one falls due, you confirm it here or in the pop-up. Set the monthly amount in the item itself (EPF, APY, NPS, SIP, Kametti, RD, Rent).'),
+    ed && dueN ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => showWealthDue(true) }, 'Review ' + dueN + ' due now') : null,
+    items.length ? h('div', { class: 'list' }, items.map(it => h('div', { class: 'item' + (ed ? ' clk' : '') + (it.held ? ' paused' : ''), role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openWealth(R_KEY[it.type], { src: it.ref }) : null },
+      h('div', { class: 'irow' }, h('div', { class: 'iname' }, it.name, it.held ? h('span', { class: 'ttag' }, 'Held') : it.due ? h('span', { class: 'ttag down' }, 'Due') : null), h('div', { class: 'ival' }, money(it.amount))),
+      h('div', { class: 'isub' }, RTYPES[it.type]), h('div', { class: 'iline' }, (it.due ? 'Due since ' + fmtDate(it.due) : 'Next: ' + fmtDate(it.next)) + (it.pend > 1 ? ' · ' + it.pend + ' pending' : ''))))) :
+      h('p', { class: 'empty' }, 'Nothing repeats yet. Add a monthly amount to an EPF, APY, NPS, SIP, Kametti or RD, or add rented property.'));
+}
+
+
+// ---------- Calendar reminders (optional): Google Calendar links and a .ics file ----------
+function pageCalendar() {
+  const book = currentBook(); let pref = { amounts: false, lead: 1 };
+  try { pref = { ...pref, ...JSON.parse(localStorage.getItem('arthik.cal') || '{}') }; } catch {}
+  const save = () => { try { localStorage.setItem('arthik.cal', JSON.stringify(pref)); } catch {} };
+  const ev = calendarEvents(book, Date.now(), S.data.rateHistory || []);
+  const list = h('div', { class: 'list' }), paintList = () => list.replaceChildren(...ev.map(e => h('div', { class: 'item' },
+    h('div', { class: 'irow' }, h('div', { class: 'iname' }, eventTitle(e, pref.amounts).replace(/^Arthik: /, '')), h('div', { class: 'ival' }, fmtDate(e.date))),
+    e.rrule ? h('div', { class: 'isub' }, 'Repeats ' + (/FREQ=MONTHLY;INTERVAL=(\d+)/.exec(e.rrule) ? 'every ' + RegExp.$1 + ' months' : /FREQ=MONTHLY/.test(e.rrule) ? 'every month' : /FREQ=WEEKLY/.test(e.rrule) ? 'every week' : /FREQ=YEARLY/.test(e.rrule) ? 'every year' : /FREQ=DAILY/.test(e.rrule) ? 'every day' : '')) : null,
+    h('a', { class: 'btn', href: googleLink(e, pref.amounts), target: '_blank', rel: 'noopener noreferrer' }, 'Add to Google Calendar'))));
+  paintList();
+  const dl = h('button', { class: 'btn primary', type: 'button', onclick: () => { const blob = new Blob([buildIcs(ev, { amounts: pref.amounts, leadDays: pref.lead })], { type: 'text/calendar' }); const a = h('a', { href: URL.createObjectURL(blob), download: 'arthik-reminders.ics' }); document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); toast('Calendar file downloaded'); } }, 'Download calendar file (.ics)');
+  const sel = h('select', { 'aria-label': 'Remind me', onchange: e => { pref.lead = +e.target.value; save(); } }, [[0, 'On the day, 9 am'], [1, '1 day before, 9 am'], [3, '3 days before, 9 am']].map(([v, l]) => h('option', { value: v, selected: v === pref.lead }, l)));
+  return h('div', null, backLink('#/more', 'More'), bookHeader('Calendar reminders', 'Optional'),
+    h('p', { class: 'small' }, 'Arthik cannot send phone notifications, but your calendar can. Add the due dates below to Google Calendar (or any calendar app) and it will remind you. This is a one-time copy of the dates as they are today. If you add or change instalments, download it again.'),
+    h('section', { class: 'card' }, toggleRow('Show amounts in the event titles (they will be visible in your calendar)', () => pref.amounts, v => { pref.amounts = v; save(); paintList(); }),
+      h('div', { class: 'flbl' }, 'Remind me'), sel, h('div', { class: 'actions' }, dl),
+      h('p', { class: 'small' }, 'How to use the file: in Google Calendar on a computer, Settings › Import & export › Import, then pick the file. The reminder time is inside each event.')),
+    ev.length ? list : h('p', { class: 'empty' }, 'Nothing is scheduled yet.'));
+}
+
+// ---------- Recently deleted (soft delete, like the mobile app) ----------
+const TRASH_KEYS = ['fd', 'rd', 'ppf', 'epf', 'nps', 'apy', 'mf', 'demat', 'insurance', 'metal', 'asset', 'bank', 'receivable', 'kametti', 'liability', 'loan', 'goal', 'rent'];
+function trashItems(book) {
+  if (book.bookType === 'EXPENSE') {
+    const rl = (book.recurringRules || []).filter(r => r.isDeleted).map(r => ({ rule: r, title: 'Recurring · ' + r.name, sub: ruleLabel(r) + ' · ' + money(r.amount), at: r.deletedAt }));
+    const cat = Object.fromEntries((book.categories || []).map(c => [c.localId, c.name])), acc = Object.fromEntries((book.accounts || []).map(a => [a.localId, a.name]));
+    return (book.transactions || []).filter(t => t.isDeleted).sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0)).map(t => ({ tx: t, title: (TYPE[t.type] ? TYPE[t.type].label : t.type) + ' · ' + money(t.amount), sub: [fmtDate(t.occurredAt), cat[t.categoryLocalId], acc[t.accountLocalId], t.note].filter(Boolean).join(' · '), at: t.deletedAt })).concat(rl).sort((a, b) => (b.at || 0) - (a.at || 0));
+  }
+  const out = [];
+  TRASH_KEYS.forEach(k => { const sp = WSPEC[k]; const idOf = sp.idOf || (x => x[sp.nameKey]);
+    (book[sp.arr] || []).forEach(rec => { if (rec.isArchived && !rec.renewed) out.push({ key: k, sp, rec, idOf, title: idOf(rec) || '(no name)', sub: sp.noun, at: rec.deletedAt }); }); });
+  return out.sort((a, b) => (b.at || 0) - (a.at || 0));
+}
+function pageTrash() {
+  const book = currentBook(), items = trashItems(book), ed = canEdit();
+  const exp = book.bookType === 'EXPENSE', bname = book.name;
+  const doIt = (btn, label, fn, msg) => btn.onclick = async () => { btn.disabled = true; try { await fn(); toast(msg); route(); } catch (e) { toast(e.message + ' Nothing was changed.', true); btn.disabled = false; } };
+  const rows = items.map(it => {
+    const restore = h('button', { class: 'btn', type: 'button' }, 'Restore'), kill = h('button', { class: 'btn danger', type: 'button' }, 'Delete forever');
+    if (exp && it.rule) {
+      const rr = it.rule;
+      doIt(restore, 'Restore', () => mutateBook(b => { const x = (b.recurringRules || []).find(y => sameRule(y, rr)); if (!x) throw new Error('Rule not found.'); delete x.isDeleted; delete x.deletedAt; }), 'Rule restored ✓');
+      kill.onclick = async () => { if (!confirm('Delete this rule forever?')) return; kill.disabled = true; try { await mutateBook(b => { b.recurringRules = (b.recurringRules || []).filter(y => !sameRule(y, rr)); }); toast('Deleted forever'); route(); } catch (e) { toast(e.message, true); kill.disabled = false; } };
+    } else if (exp) {
+      const id = it.tx.localId;
+      doIt(restore, 'Restore', () => mutate(d => { const b = findBook(d, bname); const x = b && (b.transactions || []).find(y => y.localId === id); if (!x) throw new Error('Entry not found.'); delete x.isDeleted; delete x.deletedAt; }), 'Entry restored ✓');
+      kill.onclick = async () => { if (!confirm('Delete this entry forever? This cannot be undone.')) return; kill.disabled = true; try { await mutate(d => { const b = findBook(d, bname); if (b) b.transactions = (b.transactions || []).filter(y => y.localId !== id); }); toast('Deleted forever'); route(); } catch (e) { toast(e.message, true); kill.disabled = false; } };
+    } else {
+      const nm = it.idOf(it.rec), arr = it.sp.arr;
+      const find = b => (b[arr] || []).findIndex(x => x.isArchived && it.idOf(x) === nm);
+      doIt(restore, 'Restore', () => mutateWealth(b => { const i = find(b); if (i < 0) throw new Error('Item not found.'); b[arr][i].isArchived = false; delete b[arr][i].deletedAt; }), 'Restored ✓ · back in your Net Worth');
+      kill.onclick = async () => { if (!confirm('Delete “' + nm + '” forever? This cannot be undone.')) return; kill.disabled = true; try { await mutateWealth(b => { const i = find(b); if (i >= 0) b[arr].splice(i, 1); }); toast('Deleted forever'); route(); } catch (e) { toast(e.message, true); kill.disabled = false; } };
+    }
+    return h('div', { class: 'item' }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, it.title)), it.sub ? h('div', { class: 'isub' }, it.sub) : null,
+      it.at ? h('div', { class: 'iline' }, 'Deleted ' + fmtDate(it.at)) : null, ed ? h('div', { class: 'actions' }, restore, kill) : null);
+  });
+  return h('div', null, backLink('#/settings', 'Settings'), bookHeader('Recently deleted', exp ? 'Entries you deleted' : 'Items you deleted'),
+    h('p', { class: 'small' }, 'Deleted items are kept here, out of your totals, until you delete them forever. Restore puts them back as they were.' + (ed ? '' : ' Sign in to restore.')),
+    rows.length ? h('div', { class: 'list' }, rows) : h('p', { class: 'empty' }, 'Nothing deleted.')
+  );
+}
 function pageSettings() {
   const ex = expenseBooks(S.data);
   return h('div', null, bookHeader('Settings', 'Arthik web ' + APP_VERSION + (canEdit() ? ' · editing on' : ' · view only')),
     h('section', { class: 'card' }, h('h2', null, 'Your data file'),
       h('p', null, 'Dropbox › Apps › Arthik › arthik-data.json'), h('p', { class: 'small' }, 'Last saved ' + (S.modified ? new Date(S.modified).toLocaleString('en-IN') : 'unknown') + (S.offline ? ' (offline copy)' : '')),
       h('p', { class: 'small' }, 'The protected backup is locked with your data password, so no new password is asked. The unprotected copy has no password at all.'),
+      h('p', null, h('a', { class: 'btn', href: '#/trash' }, 'Recently deleted (' + (currentBook() ? trashItems(currentBook()).length : 0) + ')')),
       h('p', { class: 'small' }, `${wealthBooks(S.data).length} Wealth book(s) and ${ex.length} Expense book(s) in this file. Use the book picker at the top to switch.`),
       h('div', { class: 'row' },
         S.enc ? h('button', { class: 'btn', onclick: () => { if (confirm('This backup file is locked with your data password (the one you use to unlock Arthik). Nobody can open it without that password.\n\nDownload it now?')) download('arthik-backup-' + new Date().toISOString().slice(0, 10) + '.json', S.enc); } }, 'Download backup (locked with your password)') : null,
