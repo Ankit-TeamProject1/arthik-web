@@ -4,7 +4,7 @@ import { optionList, sameName, KIND_LABEL } from './lists.js';
 import { encrypt, decrypt, isEncrypted } from './crypto.js';
 import { loanEmi, loanSchedule } from './calc.js';
 import { RTYPES, recurringItems, eventItems, allDue, confirmInBook, declineInBook, rentPending, calendarEvents, buildIcs, googleLink, eventTitle } from './recurring.js';
-import { readFile, parseStatement, planImport2 as planImport, applyImport2 as applyImport, buildHoldingsXlsx, classify, planOptionOf, KINDS, KIND_NAME } from './broker.js';
+import { readFile, parseStatement, parseTemplate, planUpdate, applyUpdate, newUid, planImport2 as planImport, applyImport2 as applyImport, buildHoldingsXlsx, classify, planOptionOf, KINDS, KIND_NAME } from './broker.js';
 import { GOAL_MAP, assetLabel, utcMonth, CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, setMask, money, pct, fmtDate, metalLabel, price2 } from './model.js';
 
 const root = document.getElementById('app');
@@ -375,9 +375,9 @@ function comingUp(book) {
   return h('div', null, h('h2', null, 'Coming up (next 30 days)'), h('div', { class: 'list' }, ev.map(e => h('a', { class: 'item clk', href: '#/recurring', 'data-deco': deco(e.key) },
     h('div', { class: 'irow' }, h('div', { class: 'iname' }, e.verb + ' ' + e.name), h('div', { class: 'ival' }, e.amount ? money(e.amount) : '')), h('div', { class: 'isub' }, fmtDate(e.date))))));
 }
-function itemCard(it, key) {
+function itemCard(it, key, look) {
   const ed = canEdit() && key && WSPEC[key] && it.src;
-  const dd = DECO[key], cdef = dd ? { color: dd[0], ill: dd[1] } : null;
+  const dd = look || DECO[key], cdef = dd ? { color: dd[0], ill: dd[1] } : null;
   return h('div', { class: 'item' + (cdef ? ' acc' : '') + (ed ? ' clk' : ''), style: cdef ? { '--acc': cdef.color } : null, role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openWealth(key, it) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openWealth(key, it); } : null },
     it.excluded ? h('div', { class: 'excl' }, 'Not in Net Worth') : null,
     h('div', { class: 'irow' }, h('div', { class: 'iname' }, cdef ? h('img', { class: 'iill', src: 'icons/ill/' + cdef.ill + '.svg', alt: '', width: 36, height: 36 }) : null, it.name, wPill(it.src)), h('div', { class: 'ival' }, money(it.value))),
@@ -400,28 +400,51 @@ function pageCategory(key) {
 // ---------- Investments: mutual funds, stocks, SGB, ETF and bonds in one place ----------
 let invBroker = '', invKind = '';
 const brokerOf = it => String(it.hold ? it.broker : (it.src && (it.src.accountName || it.src.platformName)) || '').trim();
+const acctOf = it => String(it.hold && it.src ? it.src.accountId || '' : '').trim();
+const acctKey = (b, a) => b + '||' + (a || '');
+const acctLabel = k => { const [b, a] = k.split('||'); return b + (a ? ' · ' + a : ''); };
+const KIND_LOOK = { MF: ['#7C3AED', 'mf'], STOCK: ['#2563EB', 'demat'], SGB: ['#D97706', 'gold'], ETF: ['#0D9488', 'bank'], BOND: ['#16A34A', 'fd'], OTHER: ['#64748B', 'manual'] };
 const kindOf = it => it.hold ? it.kind : it._cat === 'mf' ? 'MF' : classify({ name: it.name, isin: '', sector: '', itype: '' });
 function pageInvest() {
   const c = computed(), all = [...c.byKey.mf.items.map(i => ({ ...i, _cat: 'mf' })), ...c.byKey.demat.items.map(i => ({ ...i, _cat: 'demat' }))];
-  const brokers = [...new Set(all.map(brokerOf).filter(Boolean))].sort((a, b) => a.localeCompare(b)), unlinked = all.some(i => !brokerOf(i));
-  if (invBroker && invBroker !== '-' && !brokers.some(b => sameName(b, invBroker))) invBroker = '';
-  const byB = all.filter(i => !invBroker || (invBroker === '-' ? !brokerOf(i) : sameName(brokerOf(i), invBroker)));
+  const saved = (currentBook().brokerAccounts || []).filter(a => a.broker).map(a => acctKey(a.broker, a.accountId));
+  const accts = []; [...all.filter(i => brokerOf(i)).map(i => acctKey(brokerOf(i), acctOf(i))), ...saved].forEach(k => { if (!accts.some(x => x.toLowerCase() === k.toLowerCase())) accts.push(k); });
+  accts.sort((a, b) => a.localeCompare(b)); const unlinked = all.some(i => !brokerOf(i));
+  if (invBroker && invBroker !== '-' && !accts.some(b => b.toLowerCase() === invBroker.toLowerCase())) invBroker = '';
+  const inAcct = i => invBroker === '-' ? !brokerOf(i) : acctKey(brokerOf(i), acctOf(i)).toLowerCase() === invBroker.toLowerCase();
+  const byB = all.filter(i => !invBroker || inAcct(i));
   const kinds = KINDS.map(([k, l]) => [k, l, byB.filter(i => kindOf(i) === k)]).filter(x => x[2].length);
   if (invKind && !kinds.some(x => x[0] === invKind)) invKind = '';
   const list = byB.filter(i => !invKind || kindOf(i) === invKind), cnt = a => a.filter(i => !i.excluded);
   const val = cnt(list).reduce((a, i) => a + i.value, 0), cost = cnt(list).reduce((a, i) => a + (i.cost || 0), 0), gain = cost > 0 ? (val - cost) / cost * 100 : null;
   const tab = (label, on, fn, n) => h('button', { type: 'button', class: 'chip2' + (on ? ' on' : ''), onclick: () => { fn(); route(); } }, label, n != null ? h('span', { class: 'cnt' }, ' ' + n) : null);
   return h('div', null, backLink('#/dashboard', 'Home'), bookHeader('Investments', 'Mutual funds, stocks, SGB, ETF and bonds'),
-    h('section', null, h('div', { class: 'lbl' }, 'Value' + (invBroker ? ' · ' + (invBroker === '-' ? 'not linked' : invBroker) : '') + (invKind ? ' · ' + KIND_NAME[invKind] : '')), h('div', { class: 'big2' }, money(val)),
+    h('section', null, h('div', { class: 'lbl' }, 'Value' + (invBroker ? ' · ' + (invBroker === '-' ? 'not linked' : acctLabel(invBroker)) : '') + (invKind ? ' · ' + KIND_NAME[invKind] : '')), h('div', { class: 'big2' }, money(val)),
       h('div', { class: 'isub' }, 'Invested ' + money(cost) + (gain === null ? '' : ' · ' + (val >= cost ? 'Gain ' : 'Loss ') + money(Math.abs(val - cost)) + ' (' + pct(gain) + ')'))),
     canEdit() ? h('div', { class: 'row', style: { margin: '0 0 12px' } }, h('button', { class: 'btn primary', onclick: () => openUpload() }, 'Upload broker statement'),
-      h('button', { class: 'btn primary', onclick: () => openWealth('hold', null, { broker: invBroker && invBroker !== '-' ? invBroker : '', kind: invKind || 'STOCK' }) }, '+ Add holding'),
+      h('button', { class: 'btn primary', onclick: () => openWealth('hold', null, { broker: invBroker && invBroker !== '-' ? invBroker.split('||')[0] : '', accountId: invBroker && invBroker !== '-' ? invBroker.split('||')[1] : '', kind: invKind || 'STOCK' }) }, '+ Add holding'),
       h('button', { class: 'btn ghost', onclick: openExcelMenu }, 'Excel ▾')) : null,
     canEdit() && legacyList(currentBook()).length ? h('div', { class: 'okbox' }, h('b', null, legacyList(currentBook()).length + ' older entr' + (legacyList(currentBook()).length > 1 ? 'ies' : 'y') + ' in the old format. '), 'Move them into the new list to manage everything in one place. ', h('button', { class: 'btn', type: 'button', onclick: openConvertOld }, 'Move to new list')) : null,
-    brokers.length || unlinked ? h('div', { class: 'tabrow', role: 'tablist', 'aria-label': 'Broker' }, tab('All accounts', !invBroker, () => { invBroker = ''; }), brokers.map(b => tab(b, sameName(b, invBroker), () => { invBroker = b; })), unlinked && brokers.length ? tab('Not linked', invBroker === '-', () => { invBroker = '-'; }) : null) : null,
-    kinds.length ? h('div', { class: 'tabrow', role: 'tablist', 'aria-label': 'Type' }, tab('All', !invKind, () => { invKind = ''; }, byB.length), kinds.map(([k, l, a]) => tab(l, invKind === k, () => { invKind = k; }, a.length))) : null,
+    accts.length || unlinked ? h('div', { class: 'tabrow', role: 'tablist', 'aria-label': 'Account' }, tab('All accounts', !invBroker, () => { invBroker = ''; }), accts.map(b => tab(acctLabel(b), b.toLowerCase() === invBroker.toLowerCase(), () => { invBroker = b; })), unlinked && accts.length ? tab('Not linked', invBroker === '-', () => { invBroker = '-'; }) : null, canEdit() ? h('button', { type: 'button', class: 'chip2 addacc', onclick: openAddAccount }, '+ Account') : null) : (canEdit() ? h('div', { class: 'tabrow' }, h('button', { type: 'button', class: 'chip2 addacc', onclick: openAddAccount }, '+ Account')) : null),
+    kinds.length ? h('div', { class: 'tabrow', role: 'tablist', 'aria-label': 'Type' }, tab('All', !invKind, () => { invKind = ''; }, byB.length), kinds.map(([k, l, a]) => { const b = tab(l, invKind === k, () => { invKind = k; }, a.length); b.style.setProperty('--kc', (KIND_LOOK[k] || KIND_LOOK.OTHER)[0]); b.classList.add('kc'); return b; })) : null,
     list.length > 1 ? sortBar() : null,
-    list.length ? h('div', { class: 'list' }, sortItems(list).map(it => itemCard(it, it.hold ? 'hold' : it._cat))) : h('p', { class: 'empty' }, canEdit() ? 'Nothing here yet. Upload your broker statement, or add a holding.' : 'Nothing here yet.'));
+    list.length ? h('div', { class: 'list' }, sortItems(list).map(it => itemCard(it, it.hold ? 'hold' : it._cat, KIND_LOOK[kindOf(it)] || KIND_LOOK.OTHER))) : h('p', { class: 'empty' }, canEdit() ? 'Nothing here yet. Upload your broker statement, or add a holding.' : 'Nothing here yet.'));
+}
+// a named account (broker + client ID / nickname) that exists before any holding is saved in it
+function openAddAccount() {
+  const st = { broker: '', account: '' };
+  sheetForm('Add account', api => {
+    const bBtn = h('button', { type: 'button', class: 'btn pickbtn' }), aBox = h('input', { type: 'text', placeholder: 'Client ID or a nickname, e.g. Zerodha 1', 'aria-label': 'Account name', autocomplete: 'off', oninput: e => { st.account = e.target.value; } });
+    const newPicks = [], paintB = () => { bBtn.textContent = st.broker || 'Choose broker / platform…'; }; paintB();
+    bBtn.onclick = () => openBankPicker(st.broker, optionList('broker', S.data), (n, isNew) => { st.broker = n; if (isNew) newPicks.push({ kind: 'broker', name: n }); paintB(); }, 'broker');
+    return h('div', null, h('p', { class: 'small' }, 'An account keeps its holdings separate. Uploads into a new account never change holdings saved in another account.'),
+      h('div', { class: 'flbl' }, 'Broker / platform'), bBtn, h('div', { class: 'flbl' }, 'Account name'), aBox,
+      h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn primary big', onclick: ev => {
+        const nm = st.account.trim().replace(/\s+/g, ' '); if (!st.broker) return api.fail('Choose the broker / platform.'); if (!nm) return api.fail('Type the account name.');
+        if ((currentBook().brokerAccounts || []).some(a => sameName(a.broker, st.broker) && sameName(a.accountId, nm)) || (currentBook().brokerHoldings || []).some(x => !x.isArchived && sameName(x.broker, st.broker) && sameName(x.accountId, nm))) return api.fail('This account already exists.');
+        api.run(ev.currentTarget, 'Saving…', () => mutateWealth((b, d) => { b.brokerAccounts = b.brokerAccounts || []; b.brokerAccounts.push({ broker: st.broker, accountId: nm });
+          newPicks.forEach(({ kind, name }) => { d.customLists = d.customLists || {}; d.customLists[kind] = d.customLists[kind] || []; if (!optionList(kind, d).some(x => sameName(x, name))) d.customLists[kind].push(name); }); })).then(ok => { if (ok) { invBroker = acctKey(st.broker, nm); toast('Account added ✓'); route(); } }); } }, 'Add account')));
+  });
 }
 // older Mutual Fund / Demat entries (Android format) that can be moved into the new holdings list
 function legacyList(book) {
@@ -451,23 +474,50 @@ function openConvertOld() {
 }
 // every holding shown on the Investments page as template rows (older Mutual Fund / Demat entries included, marked in Notes)
 function holdingRows(book) {
-  const rows = (book.brokerHoldings || []).filter(x => !x.isArchived).map(x => [x.broker, x.accountId, x.kind, x.name, x.plan, x.option, x.isin, x.amfi, x.folio, x.units, x.avgPrice, x.price || '', x.priceDate ? dstr(x.priceDate) : '', x.tag, x.note || '']);
+  const rows = (book.brokerHoldings || []).filter(x => !x.isArchived).map(x => [x.broker, x.accountId, x.kind, x.name, x.plan, x.option, x.isin, x.amfi, x.folio, x.units, x.avgPrice, x.price || '', x.priceDate ? dstr(x.priceDate) : '', x.tag, x.note || '', x.uid || '']);
   (book.mutualFunds || []).filter(x => !x.isArchived).forEach(x => { const es = x.entries || [], u = es.reduce((a, e) => a + (e.unitsAllotted || 0), 0), inv = es.reduce((a, e) => a + (e.investedAmount || 0), 0), po = planOptionOf(x.schemeName);
-    rows.push([x.platformName || '', '', 'MF', x.schemeName, po.plan, po.option, '', x.schemeCode || '', x.folioNumber || '', +u.toFixed(4), u > 0 ? +(inv / u).toFixed(4) : 0, x.lastFetchedNav || '', x.lastFetchedAt ? dstr(x.lastFetchedAt) : '', '', 'older Mutual Fund entry']); });
-  (book.dematHoldings || []).filter(x => !x.isArchived).forEach(x => rows.push([x.accountName || '', '', classify({ name: x.stockSymbol, isin: '', sector: '', itype: '' }), x.stockSymbol, '', '', '', '', '', x.unitsHeld, x.avgBuyPrice, x.lastFetchedPrice || '', x.lastFetchedAt ? dstr(x.lastFetchedAt) : '', '', 'older Demat entry']));
+    rows.push([x.platformName || '', '', 'MF', x.schemeName, po.plan, po.option, '', x.schemeCode || '', x.folioNumber || '', +u.toFixed(4), u > 0 ? +(inv / u).toFixed(4) : 0, x.lastFetchedNav || '', x.lastFetchedAt ? dstr(x.lastFetchedAt) : '', '', 'older Mutual Fund entry', '']); });
+  (book.dematHoldings || []).filter(x => !x.isArchived).forEach(x => rows.push([x.accountName || '', '', classify({ name: x.stockSymbol, isin: '', sector: '', itype: '' }), x.stockSymbol, '', '', '', '', '', x.unitsHeld, x.avgBuyPrice, x.lastFetchedPrice || '', x.lastFetchedAt ? dstr(x.lastFetchedAt) : '', '', 'older Demat entry', '']));
   return rows;
 }
 function openExcelMenu() {
   sheetForm('Excel', api => h('div', null, h('p', { class: 'small' }, 'Fill many holdings in one go, or keep an editable copy of what you have.'),
     h('div', { class: 'stack' }, h('button', { class: 'btn', type: 'button', onclick: () => { download('arthik-holdings-sample.xlsx', buildHoldingsXlsx([], true)); closeModal(); } }, 'Download sample Excel (blank template)'),
-      h('button', { class: 'btn', type: 'button', onclick: () => { const rows = holdingRows(currentBook()); if (!rows.length) { api.fail('There are no holdings in this book yet, so there is nothing to download.'); return; } download('arthik-holdings-' + new Date().toISOString().slice(0, 10) + '.xlsx', buildHoldingsXlsx(rows, false)); closeModal(); toast(rows.length + ' holdings downloaded ✓'); } }, 'Download my holdings (Excel)'),
+      h('button', { class: 'btn', type: 'button', onclick: async ev => { if (!holdingRows(currentBook()).length) { api.fail('There are no holdings in this book yet, so there is nothing to download.'); return; }
+        if (canEdit() && (currentBook().brokerHoldings || []).some(x => !x.isArchived && !x.uid)) { const b0 = ev.currentTarget; b0.disabled = true; try { await mutateWealth(b => (b.brokerHoldings || []).forEach(x => { if (!x.uid) x.uid = newUid(); })); } catch (e) { b0.disabled = false; api.fail(e.message); return; } }
+        const rows = holdingRows(currentBook()); download('arthik-holdings-' + new Date().toISOString().slice(0, 10) + '.xlsx', buildHoldingsXlsx(rows, false)); closeModal(); toast(rows.length + ' holdings downloaded ✓'); } }, 'Download my holdings (Excel)'),
+      canEdit() ? h('button', { class: 'btn', type: 'button', onclick: () => { api.close(); openUpdateOnly(); } }, 'Update my saved holdings from an edited file') : null,
       canEdit() ? h('button', { class: 'btn primary', type: 'button', onclick: () => openUpload() }, 'Upload a filled Excel / broker file') : null),
-    h('p', { class: 'small' }, 'Older Mutual Fund and Demat entries are included and marked in Notes. Re-uploading them would add them again as new holdings, so delete the older ones after you upload.')));
+    h('p', { class: 'small' }, '“Update my saved holdings” changes only what you edited in a downloaded file (for example, filling in Client IDs) and never adds or removes anything. ' + 'Older Mutual Fund and Demat entries are included and marked in Notes. Re-uploading them would add them again as new holdings, so delete the older ones after you upload.')));
+}
+function openUpdateOnly() {
+  const st = { plan: null };
+  sheetForm('Update my saved holdings', api => {
+    const box = h('div'), fileIn = h('input', { type: 'file', accept: '.xlsx,.xlsm,.csv', 'aria-label': 'Edited holdings file' });
+    const read = h('button', { type: 'button', class: 'btn primary big' }, 'Read the file');
+    const paint = () => {
+      const pl = st.plan; if (!pl) { box.replaceChildren(); return; }
+      const warn = (t, a) => a.length ? h('div', { class: 'warnbox' }, t + ' ' + a.slice(0, 5).join(', ') + (a.length > 5 ? '…' : '')) : null;
+      const go = h('button', { type: 'button', class: 'btn primary big', disabled: !pl.change.length }, 'Confirm and save ' + pl.change.length + ' change' + (pl.change.length === 1 ? '' : 's'));
+      go.onclick = () => api.run(go, 'Saving…', () => mutateWealth(b => { const p2 = planUpdate(b.brokerHoldings, st.parsed); applyUpdate(b, p2); })).then(ok => ok && toast(pl.change.length + ' updated ✓'));
+      box.replaceChildren(h('div', { class: 'okbox' }, h('b', null, pl.change.length + ' will change · ' + pl.same + ' unchanged'), pl.change.length ? h('ul', { class: 'plist plbox' }, pl.change.map(c => h('li', null, c.name + ' · ' + c.text.join(' · ')))) : h('div', { class: 'small' }, 'Nothing differs from what is saved.')),
+        warn('Skipped (no Arthik ID in the row, use a normal upload for these):', pl.noId), warn('Not found any more (changed or deleted since the download):', pl.notFound),
+        h('div', { class: 'small' }, 'Nothing is added or removed. Only the cells you changed are applied.'), h('div', { class: 'actions' }, go));
+    };
+    read.onclick = async () => {
+      const f = fileIn.files && fileIn.files[0]; if (!f) return api.fail('Choose your edited file first.');
+      read.disabled = true; read.textContent = 'Reading…';
+      try { const sheets = await readFile(f), p = parseTemplate(sheets); if (!p || !p.holdings.length) throw new Error('This does not look like a holdings file downloaded from Arthik.'); st.parsed = p; st.plan = planUpdate(currentBook().brokerHoldings, p); paint(); api.fail(''); }
+      catch (e) { api.fail(e.message); } finally { read.disabled = false; read.textContent = 'Read the file'; }
+    };
+    return h('div', null, h('p', { class: 'small' }, 'Use the file from Excel ▾ → Download my holdings. Change any cell you need (Client ID, broker, notes, quantity, prices…) and choose it here. The hidden Arthik ID column finds each holding, even if its Client ID changed.'),
+      h('div', { class: 'flbl' }, 'Edited file'), fileIn, h('div', { class: 'actions' }, read), box);
+  });
 }
 const SUPPORTED_BROKERS = [['Zerodha', 'Zerodha (Kite)']];
 function openUpload() {
   const book = currentBook();
-  const st = { broker: '', account: '', parsed: null, plan: null, rm: false };
+  const st = { broker: (invBroker && invBroker !== '-' && SUPPORTED_BROKERS.some(b => b[0].toLowerCase() === invBroker.split('||')[0].toLowerCase())) ? SUPPORTED_BROKERS.find(b => b[0].toLowerCase() === invBroker.split('||')[0].toLowerCase())[0] : '', account: invBroker && invBroker !== '-' ? invBroker.split('||')[1] || '' : '', parsed: null, plan: null, rm: false };
   sheetForm('Upload broker statement', api => {
     const box = h('div');
     const fileIn = h('input', { type: 'file', accept: '.xlsx,.xlsm,.csv', 'aria-label': 'Statement file' });
@@ -500,16 +550,16 @@ function openUpload() {
         pl.same.length ? h('div', { class: 'small' }, pl.same.length + ' unchanged (only their price date is refreshed).') : null];
       const confirmPaint = () => {
         const back = h('button', { type: 'button', class: 'btn' }, '← Back'); back.onclick = previewPaint;
-        preview.replaceChildren(h('div', { class: 'okbox' }, h('b', null, 'Please confirm. '), 'This will ' + (summary() || 'change nothing') + '. Nothing else in your data is touched.'), ...lists(), ...warns(), h('div', { class: 'actions' }, back, go));
+        preview.replaceChildren(h('div', { class: 'okbox' }, h('b', null, 'Please confirm. '), 'This will ' + (summary() || 'change nothing') + '. Nothing else in your data is touched.'), ...lists().filter(Boolean), ...warns().filter(Boolean), h('div', { class: 'actions' }, back, go));
       };
       go.textContent = 'Confirm and save'; go.disabled = false;
       const review = h('button', { type: 'button', class: 'btn primary big' }, 'Review changes'); review.onclick = () => { if (!st.broker && !st.parsed.multi) return api.fail('Choose the broker this statement is from.'); if (!(pl.add.length + pl.update.length + pl.same.length + (st.rm ? pl.missing.length : 0))) return api.fail('There is nothing to import.'); confirmPaint(); };
       preview.replaceChildren(
         h('div', { class: 'okbox' }, 'Found ' + p.holdings.length + ' holdings' + (p.asOn ? ' as on ' + fmtDate(p.asOn) : '') + (p.clientId ? ' · client ' + p.clientId : '') + '. Nothing is saved yet. Next you will see every change and confirm it.'),
         p.notes.map(n => h('div', { class: 'small' }, n)),
-        ...lists(),
+        ...lists().filter(Boolean),
         pl.missing.length ? h('div', null, !st.rm ? sec('Saved earlier but not in this file (kept)', pl.missing, fGone) : null, toggleRow('Also move these to Recently deleted', () => st.rm, v => { st.rm = v; previewPaint(); })) : null,
-        ...warns(), h('div', { class: 'actions' }, review));
+        ...warns().filter(Boolean), h('div', { class: 'actions' }, review));
     };
     read.onclick = async () => {
       const f = fileIn.files && fileIn.files[0]; if (!f) return api.fail('Choose your statement file first.');
@@ -560,15 +610,15 @@ function pageGoals() {
   return h('div', null, bookHeader('Goals', 'Progress'),
     canEdit() ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => openWealth('goal', null) }, '+ Add goal') : null,
     c.goals.length ? h('div', { class: 'list' }, c.goals.map(g => h('div', { class: 'item clk', role: 'button', tabindex: 0, onclick: () => openGoalDetail(g), onkeydown: e => { if (e.key === 'Enter') openGoalDetail(g); } },
-      h('div', { class: 'irow' }, h('div', { class: 'iname' }, g.name), h('div', { class: 'ival' }, g.pct.toFixed(0) + '%')),
-      h('div', { class: 'bar', role: 'progressbar', 'aria-valuenow': g.pct.toFixed(0), 'aria-valuemin': 0, 'aria-valuemax': 100 }, h('span', { style: { width: g.pct + '%' } })),
+      h('div', { class: 'irow' }, h('div', { class: 'iname' }, g.name), h('div', { class: 'ival' }, g.pct.toFixed(0) + '%' + (g.pct >= 100 ? ' ✓' : ''))),
+      h('div', { class: 'bar', role: 'progressbar', 'aria-valuenow': g.pct.toFixed(0), 'aria-valuemin': 0, 'aria-valuemax': 100 }, h('span', { style: { width: Math.min(100, g.pct) + '%' } })),
       h('div', { class: 'iline' }, `${money(g.current)} of ${money(g.target)}${g.targetDate ? ' · by ' + fmtDate(g.targetDate) : ''}`),
       g.linked.length ? h('div', { class: 'isub' }, g.linked.length + (g.linked.length > 1 ? ' linked items' : ' linked item') + ' · tap to see') : null))) : h('p', null, 'No goals yet.'));
 }
 function openGoalDetail(g) {
   sheetForm(g.name, api => h('div', null,
-    h('div', { class: 'irow' }, h('div', { class: 'lbl' }, 'Progress'), h('b', null, g.pct.toFixed(0) + '%')),
-    h('div', { class: 'bar' }, h('span', { style: { width: g.pct + '%' } })),
+    h('div', { class: 'irow' }, h('div', { class: 'lbl' }, 'Progress'), h('b', null, g.pct.toFixed(0) + '%' + (g.pct >= 100 ? ' ✓' : ''))),
+    h('div', { class: 'bar' }, h('span', { style: { width: Math.min(100, g.pct) + '%' } })),
     h('div', { class: 'iline' }, `${money(g.current)} of ${money(g.target)}${g.targetDate ? ' · by ' + fmtDate(g.targetDate) : ''}`),
     h('div', { class: 'flbl', style: { marginTop: '14px' } }, 'Linked items'),
     g.linked.length ? h('div', { class: 'erows' }, g.linked.map(l => h('div', { class: 'erow' }, h('span', null, `${l.name} · ${l.cat}` + (l.excluded ? ' (not counted: Net Worth switch is off)' : '')), h('b', null, money(l.value)))))
@@ -605,14 +655,18 @@ function catColors(c) {
   const out = {}; cats.forEach((x, i) => { const col = parsed[x.localId]; out[x.localId] = col && count[col] === 1 ? col : PALETTE[i % PALETTE.length]; });
   return (c._cc = out);
 }
+const CAT_PIC = [[/groc|vegetab|fruit|milk|kirana|supermarket/i, '🛒'], [/fuel|petrol|diesel|cng/i, '⛽'], [/din|food|restaurant|eat|swiggy|zomato|cafe|snack|lunch|dinner/i, '🍽️'], [/rent|home|house|maintenance|society/i, '🏠'], [/electric|water|gas|bill|utilit|wifi|internet|broadband/i, '💡'],
+  [/car|bike|auto|cab|taxi|transport|travel|metro|bus|train|toll|parking/i, '🚗'], [/health|medic|doctor|pharm|hospital|gym|fitness/i, '💊'], [/movie|entertain|netflix|ott|music|game|fun/i, '🎬'], [/shop|cloth|apparel|fashion|amazon|flipkart/i, '🛍️'], [/flight|trip|holiday|vacation|hotel/i, '✈️'],
+  [/school|educat|fees|course|book|tuition/i, '🎓'], [/salary|income|bonus|pay\b|wage/i, '💼'], [/gift|donat|charity|festival/i, '🎁'], [/phone|mobile|recharge|dth/i, '📱'], [/insur|premium|emi|loan|invest|sip|saving/i, '🏦'], [/interest|dividend|refund|cashback/i, '💰']];
+const catPic = (name, type) => { const m = CAT_PIC.find(([re]) => re.test(name || '')); return m ? m[1] : type === 'TRANSFER' ? '🔁' : type === 'INCOME' ? '💰' : '🧾'; };
 function txRow(t, c) {
   const a = c.acc[t.accountLocalId], to = c.acc[t.toAccountLocalId], cat = c.cat[t.categoryLocalId], ty = TYPE[t.type] || TYPE.EXPENSE;
   const mode = t.type !== 'TRANSFER' && a ? ` (${a.name})` : '';
   const title = t.type === 'TRANSFER' ? `${a ? a.name : '?'} → ${to ? to.name : '?'}${t.note ? ' · ' + t.note : ''}` : (cat ? cat.name : 'Uncategorised') + (t.note ? ' · ' + t.note : '') + mode;
   const dot = t.type === 'TRANSFER' ? 'var(--pri)' : (cat ? catColors(c)[cat.localId] : 'var(--line2)');
   const ed = canEdit() && !t.__ro;
-  return h('div', { class: 'tx' + (ed ? ' clk' : ''), role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openEntry(t) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openEntry(t); } : null },
-    h('span', { class: 'dotc', style: { background: dot } }),
+  return h('div', { class: 'tx soft' + (ed ? ' clk' : ''), style: { '--tc': dot }, role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openEntry(t) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openEntry(t); } : null },
+    h('span', { class: 'txpic', 'aria-hidden': 'true' }, catPic(cat && cat.name, t.type)),
     h('div', { class: 'txm' }, h('div', { class: 'txt' }, title, h('span', { class: 'ttag ' + ty.cls }, ty.label), t.settle ? h('span', { class: 'ttag ' + (t.settle.paid ? '' : t.settle.kind === 'I_OWE' ? 'down' : 'blue') }, (t.settle.kind === 'I_OWE' ? 'I owe ' : 'Owed by ') + t.settle.person + (t.settle.paid ? ' · settled' : '')) : null), h('div', { class: 'isub' }, dayLabel(t.occurredAt))),
     h('div', { class: 'txa ' + ty.cls }, ty.sign + money(t.amount)));
 }
@@ -623,7 +677,14 @@ const accType = a => { const ty = sentence(a.type); return ty && ty.replace(/\s/
 
 // ---------- small helpers: backup age, install hint, due pills ----------
 function backupBanner() {
-  const t = S.data && S.data.exportedAt; if (!t || canEdit()) return null;   // when editing is on, the web file is the live copy
+  if (canEdit()) {   // nudge: no full backup downloaded for 14 days (or never)
+    const last = S.data && (S.data.lastBackupAt || 0); let snooze = 0; try { snooze = +localStorage.getItem('arthik.backupsnooze') || 0; } catch {}
+    const days = last ? Math.floor((Date.now() - last) / 86400000) : null;
+    if ((last && days < 14) || Date.now() < snooze || !S.data || !activeBooks(S.data).length) return null;
+    return h('div', { class: 'fresh old' }, h('span', null, '⚠ ' + (last ? `Your last backup was ${days} days ago.` : 'You have not downloaded a backup yet.') + ' Your data lives only in Dropbox, so a copy on your device is a good idea. '),
+      h('button', { class: 'btn', type: 'button', onclick: openBackup }, 'Download backup'), h('button', { class: 'link', type: 'button', onclick: () => { try { localStorage.setItem('arthik.backupsnooze', String(Date.now() + 3 * 86400000)); } catch {} route(); } }, 'Remind me in 3 days'));
+  }
+  const t = S.data && S.data.exportedAt; if (!t) return null;   // when editing is on, the web file is the live copy
   const days = Math.floor((Date.now() - t) / 86400000);
   const old = days >= 14;
   return h('div', { class: 'fresh' + (old ? ' old' : '') }, old ? '⚠ ' : '', `Data from your backup of ${fmtDate(t)}` + (days <= 0 ? ' (today)' : ` (${days} day${days === 1 ? '' : 's'} old)`) + (old ? '. Take a fresh backup on your Android phone and use Settings › Replace from a backup file.' : ''));
@@ -695,7 +756,7 @@ function openEntry(t) {
   const cats = (book.categories || []).filter(x => !x.isArchived || (t && t.categoryLocalId === x.localId));
   let lastAcc = null; try { lastAcc = +localStorage.getItem('arthik.lastacc.' + bname) || null; } catch {}
   const st = {
-    type: t ? t.type : 'EXPENSE', cat: t ? t.categoryLocalId : null,
+    type: t ? t.type : 'EXPENSE', cat: t ? t.categoryLocalId : (() => { try { const k = +localStorage.getItem('arthik.lastcat.' + bname); return cats.some(x => x.localId === k) ? k : null; } catch { return null; } })(),
     acc: t ? t.accountLocalId : ((accs.find(a => a.localId === lastAcc) || accs.find(a => a.isDefault) || accs[0] || {}).localId),
     to: t ? t.toAccountLocalId : null,
   };
@@ -755,6 +816,7 @@ function openEntry(t) {
         else b.transactions.push({ localId: b.transactions.reduce((mx, x) => Math.max(mx, x.localId || 0), 0) + 1, ...rec });
       });
       try { localStorage.setItem('arthik.lastacc.' + bname, String(st.acc)); } catch {}
+      try { if (st.cat != null) localStorage.setItem('arthik.lastcat.' + bname, String(st.cat)); } catch {}
       closeModal(); toast(isEdit ? 'Changes saved ✓' : 'Entry saved ✓'); route();
     } catch (e) { fail(e.message + ' Your entry was NOT saved. You can try again.'); save.disabled = false; save.textContent = isEdit ? 'Save changes' : 'Save entry'; }
   };
@@ -1043,7 +1105,7 @@ Object.assign(WSPEC, {
     check: rec => rec.kind === 'MF' && rec._sipAmt != null && rec._sipAmt > 0 && !rec._sipStart ? 'Choose the SIP first date (the day of month it is taken).' : '',
     post: (rec, st, src) => { if (rec.kind === 'MF' && rec._sipAmt > 0) rec.sip = { ...((src && src.sip) || {}), sipAmount: rec._sipAmt, startDate: rec._sipStart, isHeld: rec._sipHeld === 'true', lastConfirmedDate: (src && src.sip && src.sip.lastConfirmedDate) || null }; else rec.sip = null; delete rec._sipAmt; delete rec._sipStart; delete rec._sipHeld; if (!rec.entries) rec.entries = (src && src.entries) || [];
       const old = src ? src.price : null; if (rec.price != null && rec.price !== old) rec.priceDate = Date.now(); if (rec.price == null) rec.priceDate = null; rec.isin = (rec.isin || '').trim().toUpperCase(); if (rec.kind !== 'MF') { rec.plan = ''; rec.option = ''; rec.amfi = ''; rec.folio = ''; } },
-    make: () => ({ broker: '', accountId: '', sip: null, entries: [], kind: 'STOCK', plan: '', option: '', amfi: '', folio: '', name: '', isin: '', units: '', avgPrice: '', price: null, priceDate: null, tag: '', isArchived: false }) },
+    make: () => ({ uid: newUid(), broker: '', accountId: '', sip: null, entries: [], kind: 'STOCK', plan: '', option: '', amfi: '', folio: '', name: '', isin: '', units: '', avgPrice: '', price: null, priceDate: null, tag: '', isArchived: false }) },
   insurance: { arr: 'insurancePolicies', nameKey: 'policyName', noun: 'insurance policy', fields: [
       F.text('policyName', 'Policy name', { req: 1, ph: 'e.g. HDFC Term Plan' }), F.pick('insurerName', 'Insurance company', 'insurer', { req: 1 }), F.text('policyNumber', 'Policy no. (optional)'),
       F.chips('policyType', 'Type', [['TERM', 'Term'], ['HEALTH', 'Health'], ['ENDOWMENT', 'Endowment'], ['MONEY_BACK', 'Money back'], ['ULIP', 'ULIP']]),
@@ -1323,13 +1385,47 @@ function openCash() {
   });
 }
 // "Owed to me" (I paid for someone) and "I owe" (someone paid for me): tied to the entry, settled with Mark as paid (no new accounting entry)
+// an older "money owed to you" row (it has no entry behind it): mark it collected, optionally adding the money received as Income
+function openOldOwed(r) {
+  const book = currentBook(), bname = book.name, accs = (book.accounts || []).filter(a => !a.isArchived), cats = (book.categories || []).filter(x => !x.isArchived);
+  const st = { rec: false, acc: (accs.find(a => a.isDefault) || accs[0] || {}).localId, cat: (cats[0] || {}).localId };
+  sheetForm('Money owed to you', api => {
+    const box = h('div'), paint = () => box.replaceChildren(
+      toggleRow('Also record the money received (adds an Income entry)', () => st.rec, v => { st.rec = v; paint(); }),
+      st.rec ? h('div', null, h('div', { class: 'flbl' }, 'Received into'), h('div', { class: 'chips' }, accs.map(a => h('button', { type: 'button', class: 'chip2' + (st.acc === a.localId ? ' on' : ''), onclick: () => { st.acc = a.localId; paint(); } }, niceName(a.name)))),
+        h('div', { class: 'flbl' }, 'Category'), h('div', { class: 'chips' }, cats.map(x => h('button', { type: 'button', class: 'chip2' + (st.cat === x.localId ? ' on' : ''), onclick: () => { st.cat = x.localId; paint(); } }, x.name)))) : h('div', { class: 'small' }, 'Off: the row is only marked collected and your balances do not change.'));
+    paint();
+    return h('div', null, h('div', { class: 'irow' }, h('b', null, r.personName), h('b', null, money(r.amount))), r.note ? h('div', { class: 'isub' }, r.note) : null, h('div', { class: 'isub' }, 'Added ' + fmtDate(r.createdAt)),
+      h('div', { class: 'small', style: { margin: '10px 0' } }, 'This is an older entry from before the Owed to me option, so it has no linked entry. New ones are made from an expense entry.'), box,
+      h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn primary big', onclick: ev => api.run(ev.currentTarget, 'Saving…', () => mutateBook(b => {
+        const x = (b.expenseReceivables || []).find(y => !y.isCollected && y.personName === r.personName && y.createdAt === r.createdAt && y.amount === r.amount); if (!x) throw new Error('This row was changed on another device.');
+        x.isCollected = true; x.collectedAt = Date.now();
+        if (st.rec) { if (st.acc == null || st.cat == null) throw new Error('Choose the account and category.'); b.transactions = b.transactions || [];
+          b.transactions.push({ localId: b.transactions.reduce((m, y) => Math.max(m, y.localId || 0), 0) + 1, type: 'INCOME', amount: x.amount, accountLocalId: st.acc, toAccountLocalId: null, categoryLocalId: st.cat, note: 'Received from ' + x.personName, occurredAt: Date.now() }); }
+      })).then(ok => ok && toast('Marked collected ✓')) }, 'Mark as collected')));
+  });
+}
+// everything with one person: entries they owe you or you owe them, open and settled, with the running balance
+function openPerson(name) {
+  const c = computed(), book = currentBook(), mine = (c.txs || []).filter(t => t.settle && sameName(t.settle.person, name)).sort((a, b) => b.occurredAt - a.occurredAt);
+  const legacy = (book.expenseReceivables || []).filter(r => sameName(r.personName, name));
+  const owedMe = mine.filter(t => !t.settle.paid && t.settle.kind === 'OWED_TO_ME').reduce((a, t) => a + t.amount, 0) + legacy.filter(r => !r.isCollected).reduce((a, r) => a + r.amount, 0);
+  const iOwe = mine.filter(t => !t.settle.paid && t.settle.kind === 'I_OWE').reduce((a, t) => a + t.amount, 0), net = owedMe - iOwe;
+  sheetForm(name, api => h('div', null,
+    h('div', { class: 'okbox' }, net === 0 ? h('b', null, 'All settled with ' + name + '.') : h('b', null, net > 0 ? name + ' owes you ' + money(net) : 'You owe ' + name + ' ' + money(-net)),
+      h('div', { class: 'small' }, `Owed to me ${money(owedMe)} · I owe ${money(iOwe)} (open entries only)`)),
+    h('div', { class: 'flbl' }, 'All entries (' + (mine.length + legacy.length) + ')'),
+    h('div', { class: 'erows' }, mine.map(t => h('div', { class: 'erow clk', role: 'button', tabindex: 0, onclick: () => { api.close(); openEntry(t); } },
+      h('span', null, fmtDate(t.occurredAt) + ' · ' + (t.settle.kind === 'I_OWE' ? 'I owe' : 'Owed to me') + (t.note ? ' · ' + t.note : '') + (t.settle.paid ? ' · settled' : '')), h('b', null, money(t.amount)))),
+      legacy.map(r => h('div', { class: 'erow' }, h('span', null, fmtDate(r.createdAt) + ' · Owed to me (older entry)' + (r.note ? ' · ' + r.note : '') + (r.isCollected ? ' · collected' : '')), h('b', null, money(r.amount)))))));
+}
 function settleBox(c) {
   const sum = a => a.reduce((x, t) => x + t.amount, 0), ed = canEdit();
   const tile = (t, kind) => h('div', { class: 'item acc' + (ed ? ' clk' : ''), 'data-deco': 'recv', style: { '--acc': kind === 'I_OWE' ? '#EF4444' : '#22C55E' }, role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openEntry(t) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openEntry(t); } : null },
-    h('div', { class: 'irow' }, h('div', { class: 'iname' }, t.settle.person), h('div', { class: 'ival' }, money(t.amount))),
+    h('div', { class: 'irow' }, h('div', { class: 'iname' }, h('button', { type: 'button', class: 'link plink', title: 'See everything with ' + t.settle.person, onclick: e => { e.stopPropagation(); openPerson(t.settle.person); } }, t.settle.person)), h('div', { class: 'ival' }, money(t.amount))),
     h('div', { class: 'isub' }, [(c.cat[t.categoryLocalId] || {}).name, t.note, fmtDate(t.occurredAt)].filter(Boolean).join(' · ')), ed ? h('div', { class: 'iline dim' }, 'Tap to open the entry and mark it paid') : null);
   const blk = (title, list, kind, extra) => list.length || (extra && extra.length) ? h('div', null, h('h2', null, title + ' · ' + money(sum(list) + (extra || []).reduce((x, r) => x + r.amount, 0))), h('div', { class: 'list' }, list.map(t => tile(t, kind)),
-    (extra || []).map(r => h('div', { class: 'item' }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.personName), h('div', { class: 'ival' }, money(r.amount))), r.note ? h('div', { class: 'isub' }, r.note) : null)))) : null;
+    (extra || []).map(r => h('div', { class: 'item' + (ed ? ' clk' : ''), role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openOldOwed(r) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openOldOwed(r); } : null }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, r.personName), h('div', { class: 'ival' }, money(r.amount))), r.note ? h('div', { class: 'isub' }, r.note) : null, ed ? h('div', { class: 'iline dim' }, 'Tap to mark it collected') : null)))) : null;
   return h('div', null, blk('Owed to me', c.owedTx, 'OWED_TO_ME', c.owed), blk('I owe', c.oweTx, 'I_OWE'));
 }
 function pageExpenseDashboard() {
@@ -1346,11 +1442,11 @@ function pageExpenseDashboard() {
       h('div', { class: 'hsub' }, cur ? h('span', null, 'Today ', h('b', { class: 'down' }, money(c.today))) : null, h('span', null, (cur ? 'Income this month ' : 'Income '), h('b', { class: 'up' }, money(c.monthIncome))))),
     h('section', { class: 'card' }, h('div', { class: 'lbl' }, cur ? 'Spending by category (this month)' : 'Spending by category (' + ml + ')'),
       !c.topCats.length ? h('p', { class: 'small' }, cur ? 'Nothing spent yet this month.' : 'No spending recorded in ' + ml + '.') : null,
-      c.topCats.slice(0, 8).map(x => {
+      c.topCats.slice(0, 5).map(x => {
         const pctw = c.month > 0 ? x.spent / c.month * 100 : 0;
         const col = x.cat ? catColors(c)[x.cat.localId] : 'var(--mut)';
         return h('div', { class: 'catrow' }, h('div', { class: 'irow' }, h('span', null, h('span', { class: 'sw', style: { background: col } }), x.cat ? x.cat.name : 'Uncategorised'), h('b', null, money(x.spent))), h('div', { class: 'bar' }, h('span', { style: { width: pctw + '%', background: col } })));
-      }))),
+      }), c.topCats.length > 5 ? h('div', { class: 'small' }, '+ ' + (c.topCats.length - 5) + ' more categories · ', h('a', { href: '#/transactions' }, 'see entries')) : null)),
     h('h2', null, 'Accounts'),
     h('div', { class: 'grid' }, c.accounts.map(a => h('div', { class: 'tile' }, h('div', { class: 'tile-top' }, h('span', { class: 'tname' }, niceName(a.name)), accType(a) ? h('span', { class: 'tnote' }, accType(a)) : null),
       h('div', { class: 'tval' + (a.balance < 0 ? ' down' : '') }, money(a.balance)), duePill(a, c)))),
@@ -1360,7 +1456,7 @@ function pageExpenseDashboard() {
     comingUp(book));
 }
 
-const ef = { q: '', type: 'ALL', month: 'ALL', cat: 'ALL', acc: 'ALL', limit: 100 };
+const ef = { settle: 'ALL', q: '', type: 'ALL', month: 'ALL', cat: 'ALL', acc: 'ALL', limit: 100 };
 function pageEntries() {
   const c = computed();
   const months = [...new Set(c.txs.map(t => { const d = new Date(t.occurredAt); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); }))];
@@ -1371,13 +1467,14 @@ function pageEntries() {
     if (ef.acc !== 'ALL' && String(t.accountLocalId) !== ef.acc && String(t.toAccountLocalId) !== ef.acc) return false;
     const d = new Date(t.occurredAt), mk = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
     if (ef.month !== 'ALL' && mk !== ef.month) return false;
+    if (ef.settle !== 'ALL') { const sl = t.settle; if (!sl) return false; if (ef.settle === 'PAID' ? !sl.paid : (sl.paid || sl.kind !== ef.settle)) return false; }
     if (!q) return true;
     const cat = c.cat[t.categoryLocalId], a = c.acc[t.accountLocalId];
-    return [t.note, cat && cat.name, a && a.name, String(t.amount)].filter(Boolean).join(' ').toLowerCase().includes(q);
+    return [t.note, cat && cat.name, a && a.name, String(t.amount), t.settle && t.settle.person].filter(Boolean).join(' ').toLowerCase().includes(q);
   });
   const shown = rows.slice(0, ef.limit);
   const spent = rows.filter(t => t.type === 'EXPENSE').reduce((s, t) => s + t.amount, 0), got = rows.filter(t => t.type === 'INCOME').reduce((s, t) => s + t.amount, 0);
-  const search = h('input', { type: 'search', placeholder: 'Search note, category, account or amount', value: ef.q, 'aria-label': 'Search entries' });
+  const search = h('input', { type: 'search', placeholder: 'Search note, category, account, person or amount', value: ef.q, 'aria-label': 'Search entries' });
   search.addEventListener('change', () => { ef.q = search.value; ef.limit = 100; route(); });
   const sel = (opts, cur, set, label) => h('select', { 'aria-label': label, onchange: e => { set(e.target.value); ef.limit = 100; route(); } }, opts.map(([v, l]) => h('option', { value: v, selected: v === cur }, l)));
   const groups = []; shown.forEach(t => { const k = dayLabel(t.occurredAt); const g = groups[groups.length - 1]; if (g && g.k === k) g.rows.push(t); else groups.push({ k, rows: [t] }); });
@@ -1386,6 +1483,7 @@ function pageEntries() {
       sel([['ALL', 'All types'], ['EXPENSE', 'Expenses'], ['INCOME', 'Income'], ['TRANSFER', 'Transfers']], ef.type, v => ef.type = v, 'Type'),
       sel([['ALL', 'All categories'], ...(c.catList || Object.values(c.cat)).map(x => [String(x.localId), x.name])], ef.cat, v => ef.cat = v, 'Category'),
       sel([['ALL', 'All accounts'], ...Object.values(c.acc).map(a => [String(a.localId), niceName(a.name) + (accType(a) ? ' (' + accType(a) + ')' : '')])], ef.acc, v => ef.acc = v, 'Account'),
+      sel([['ALL', 'Owed / owing: all'], ['OWED_TO_ME', 'Owed to me (open)'], ['I_OWE', 'I owe (open)'], ['PAID', 'Settled']], ef.settle, v => ef.settle = v, 'Owed or owing'),
       sel([['ALL', 'All months'], ...months.map(m => [m, new Date(m + '-15').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })])], ef.month, v => ef.month = v, 'Month')),
     h('div', { class: 'hsub', style: { margin: '10px 0' } }, h('span', null, rows.length + ' entries'), h('span', null, 'Spent ', h('b', { class: 'down' }, money(spent))), h('span', null, 'Income ', h('b', { class: 'up' }, money(got)))),
     h('section', { class: 'card' }, groups.map(g => h('div', null, h('div', { class: 'dayh' }, g.k), g.rows.map(t => txRow(t, c)))), rows.length ? null : h('p', { class: 'empty' }, c.txs.length ? 'No entries match these filters. Try clearing the search or choosing “All”.' : 'No entries yet.')),
@@ -1664,6 +1762,50 @@ function pageTrash() {
 }
 // ---------- Backup (choose the books) and delete / restore a book ----------
 const bkey = b => b.name + '|' + b.bookType, btype = b => b.bookType === 'EXPENSE' ? 'Expense book' : 'Wealth book';
+// ---------- pick-list manager: rename or merge banks, brokers, client IDs, insurers, platforms, pension managers and person names ----------
+const PL_KINDS = [['bank', 'Banks'], ['broker', 'Brokers'], ['clientid', 'Client IDs'], ['insurer', 'Insurers'], ['platform', 'MF platforms'], ['pfm', 'Pension managers'], ['person', 'People (owed / owing)']];
+const PL_USE = { bank: ['W', ['fixedDeposits', 'bankName'], ['recurringDeposits', 'bankName'], ['ppfAccounts', 'bankOrPostOfficeName'], ['apyAccounts', 'bankName'], ['bankBalances', 'bankName'], ['loans', 'lenderName']],
+  broker: ['W', ['brokerHoldings', 'broker'], ['dematHoldings', 'accountName'], ['brokerAccounts', 'broker']], clientid: ['W', ['brokerHoldings', 'accountId'], ['brokerAccounts', 'accountId']],
+  insurer: ['W', ['insurancePolicies', 'insurerName']], platform: ['W', ['mutualFunds', 'platformName']], pfm: ['W', ['npsAccounts', 'pfm']], person: ['E', ['expenseReceivables', 'personName'], ['transactions', 'settle.person']] };
+function plSlots(d, kind) {   // every place in the data that holds a name of this kind: [{get, set}]
+  const [bt, ...fields] = PL_USE[kind], out = [];
+  (d.books || []).filter(b => !b.isArchived && (bt === 'E' ? b.bookType === 'EXPENSE' : b.bookType !== 'EXPENSE')).forEach(b => fields.forEach(([arr, f]) => (b[arr] || []).forEach(x => {
+    if (f === 'settle.person') { if (x.settle && x.settle.person) out.push({ get: () => x.settle.person, set: v => { x.settle.person = v; } }); }
+    else if (x[f]) out.push({ get: () => x[f], set: v => { x[f] = v; } }); })));
+  return out;
+}
+function plNames(d, kind) {
+  const m = new Map(); plSlots(d, kind).forEach(sl => { const n = String(sl.get()).trim(), k = n.toLowerCase(); if (!k) return; const e = m.get(k) || { name: n, n: 0 }; e.n++; m.set(k, e); });
+  (((d.customLists || {})[kind]) || []).forEach(n => { const k = String(n).trim().toLowerCase(); if (k && !m.has(k)) m.set(k, { name: String(n).trim(), n: 0 }); });
+  return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+function openPickLists(kind) {
+  kind = kind || PL_KINDS[0][0];
+  sheetForm('Pick lists', api => {
+    const names = plNames(S.data, kind);
+    return h('div', null, h('p', { class: 'small' }, 'Fix a typo or merge two spellings (for example “Hdfc” and “HDFC Bank”). Every place that uses the name is updated together.'),
+      chipRow(PL_KINDS, () => kind, v => { api.close(); openPickLists(v); }),
+      names.length ? h('div', { class: 'erows' }, names.map(x => h('div', { class: 'erow clk', role: 'button', tabindex: 0, onclick: () => { api.close(); openRenameName(kind, x.name); } }, h('span', null, x.name), h('b', null, x.n ? x.n + ' use' + (x.n > 1 ? 's' : '') : 'not used')))) : h('p', { class: 'small' }, 'Nothing saved in this list yet.'));
+  });
+}
+function openRenameName(kind, name) {
+  const st = { to: name };
+  sheetForm('Rename or merge', api => {
+    const others = plNames(S.data, kind).map(x => x.name).filter(n => n.toLowerCase() !== name.toLowerCase()), note = h('div', { class: 'small' }), btn = h('button', { type: 'button', class: 'btn primary big' }, 'Save');
+    const inp = h('input', { type: 'text', value: name, list: 'plnames', 'aria-label': 'New name', autocomplete: 'off', maxlength: 60 });
+    const upd = () => { const t = inp.value.trim().replace(/\s+/g, ' '); st.to = t; const hit = others.find(n => n.toLowerCase() === t.toLowerCase()); const uses = plSlots(S.data, kind).filter(sl => String(sl.get()).trim().toLowerCase() === name.toLowerCase()).length;
+      note.textContent = !t ? 'Type the new name.' : t === name ? 'Change the spelling, or pick another name from the list to merge into it.' : (hit ? `“${name}” will be merged into the existing “${hit}”. ` : `“${name}” will be renamed. `) + uses + ' place' + (uses === 1 ? '' : 's') + ' will change.'; btn.disabled = !t || t === name; };
+    inp.oninput = upd; upd();
+    btn.onclick = () => { const t0 = st.to; if (!t0) return; api.run(btn, 'Saving…', () => mutate(d => {
+      const hit = plNames(d, kind).map(x => x.name).find(n => n.toLowerCase() === t0.toLowerCase() && n.toLowerCase() !== name.toLowerCase()), to = hit || t0;
+      plSlots(d, kind).forEach(sl => { if (String(sl.get()).trim().toLowerCase() === name.toLowerCase()) sl.set(to); });
+      d.customLists = d.customLists || {}; const cl = d.customLists[kind] || [], out = []; cl.forEach(n => { const v = String(n).trim().toLowerCase() === name.toLowerCase() ? to : n; if (!out.some(y => String(y).trim().toLowerCase() === String(v).trim().toLowerCase())) out.push(v); });
+      if (!hit && kind !== 'person' && !out.some(y => String(y).trim().toLowerCase() === to.toLowerCase())) out.push(to); d.customLists[kind] = out;
+    })).then(ok => { if (ok) { toast('Updated ✓'); } }); };
+    return h('div', null, h('p', null, h('b', null, name), ' · ' + (PL_KINDS.find(k => k[0] === kind) || [0, ''])[1].toLowerCase()), h('div', { class: 'flbl' }, 'New name'), inp, h('datalist', { id: 'plnames' }, others.map(n => h('option', { value: n }))), note,
+      h('p', { class: 'small' }, 'Names inside item titles (for example “HDFC Bank 4455” on an FD) are not changed. Edit those items directly.'), h('div', { class: 'actions' }, btn));
+  });
+}
 function openBackup() {
   const books = activeBooks(S.data), sel = new Set(books.map(bkey)); let prot = !!S.pw;
   sheetForm('Download backup', api => {
@@ -1672,7 +1814,7 @@ function openBackup() {
       const picked = books.filter(b => sel.has(bkey(b))); if (!picked.length) return api.fail('Choose at least one book.');
       const data = { ...S.data, books: picked }, all = picked.length === books.length, stamp = new Date().toISOString().slice(0, 10);
       const nm = 'arthik-backup-' + stamp + (all ? '' : '-' + picked.map(b => b.name.replace(/[^A-Za-z0-9]+/g, '_')).join('+').slice(0, 40)) + (prot ? '' : '-unprotected') + '.json';
-      btn.disabled = true; try { download(nm, prot ? await encrypt(JSON.stringify(data), S.pw) : JSON.stringify(data, null, 2)); closeModal(); toast('Backup downloaded ✓ (' + picked.length + ' book' + (picked.length > 1 ? 's' : '') + ')'); } catch (e) { api.fail(e.message); btn.disabled = false; }
+      btn.disabled = true; try { download(nm, prot ? await encrypt(JSON.stringify(data), S.pw) : JSON.stringify(data, null, 2)); closeModal(); toast('Backup downloaded ✓ (' + picked.length + ' book' + (picked.length > 1 ? 's' : '') + ')'); if (all && canEdit()) mutate(d => { d.lastBackupAt = Date.now(); }).then(() => route()).catch(() => {}); } catch (e) { api.fail(e.message); btn.disabled = false; }
     };
     return h('div', null, h('p', { class: 'small' }, 'Choose which books go into this backup file.'),
       books.map(b => toggleRow(b.name + ' · ' + btype(b), () => sel.has(bkey(b)), v => { v ? sel.add(bkey(b)) : sel.delete(bkey(b)); })),
@@ -1743,7 +1885,7 @@ function pageSettings() {
       h('p', { class: 'small' }, 'Download backup lets you choose which books to include, and whether the file is locked with your data password.'),
       h('p', null, h('a', { class: 'btn', href: '#/trash' }, 'Recently deleted (' + (currentBook() ? trashItems(currentBook()).length : 0) + ')')),
       h('p', { class: 'small' }, `${wealthBooks(S.data).length} Wealth book(s) and ${ex.length} Expense book(s) in this file. Use the book picker at the top to switch.`),
-      h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: openBackup }, 'Download backup…'), canEdit() ? h('button', { class: 'btn', onclick: openChangePassword }, 'Change data password') : null)),
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: openBackup }, 'Download backup…'), canEdit() ? h('button', { class: 'btn', onclick: openChangePassword }, 'Change data password') : null, canEdit() ? h('button', { class: 'btn', onclick: () => openPickLists() }, 'Pick lists…') : null)),
     booksCard(),
     (currentBook() && currentBook().bookType === 'EXPENSE') ? h('section', { class: 'card' }, h('h2', null, 'Manage this book'), h('p', { class: 'small' }, canEdit() ? 'Add, rename, recolour or archive.' : 'Sign in to Dropbox to make changes.'), h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/accounts' }, 'Accounts'), h('a', { class: 'btn', href: '#/categories' }, 'Categories'), h('a', { class: 'btn', href: '#/budgets' }, 'Budgets'))) : null,
     !S.enc ? null : h('section', { class: 'card' }, h('h2', null, 'Replace data'), h('p', { class: 'small' }, 'Load a newer Android backup over this file.'), h('button', { class: 'btn', onclick: () => screenSetup(true) }, 'Replace from a backup file')),

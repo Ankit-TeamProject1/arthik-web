@@ -55,7 +55,7 @@ const norm = s => String(s || '').trim().toLowerCase();
 /** Standard list + the entries this user added, sorted, no duplicates. */
 export function optionList(kind, data) {
   const seen = new Map();
-  const derived = kind === 'clientid' ? ((data && data.books) || []).flatMap(b => (b.brokerHoldings || []).map(x => x.accountId)).filter(Boolean) : [];
+  const derived = kind === 'clientid' ? ((data && data.books) || []).flatMap(b => (b.brokerHoldings || []).map(x => x.accountId).concat((b.brokerAccounts || []).map(x => x.accountId))).filter(Boolean) : [];
   [...(LISTS[kind] || []), ...derived, ...(((data && data.customLists) || {})[kind] || [])].forEach(n => { const k = norm(n); if (k && !seen.has(k)) seen.set(k, String(n).trim()); });
   return [...seen.values()].sort((a, b) => a.localeCompare(b));
 }

@@ -141,7 +141,7 @@ export function applyImport(book, plan, ctx, removeMissing) {
 }
 
 // ================= v0.7.4: Excel template (download a sample, fill it, upload it) =================
-export const TEMPLATE_COLS = ['Broker / Platform', 'Client ID / Account', 'Type', 'Name or Symbol', 'Plan', 'Option', 'ISIN', 'AMFI scheme code', 'Folio no.', 'Quantity / Units', 'Average buy price', 'Latest price / NAV', 'Price as on', 'Category / Sector', 'Notes'];
+export const TEMPLATE_COLS = ['Broker / Platform', 'Client ID / Account', 'Type', 'Name or Symbol', 'Plan', 'Option', 'ISIN', 'AMFI scheme code', 'Folio no.', 'Quantity / Units', 'Average buy price', 'Latest price / NAV', 'Price as on', 'Category / Sector', 'Notes', 'Arthik ID'];
 const crcT = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
 const crc32 = b => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = crcT[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
 function zipStore(files) {
@@ -166,7 +166,7 @@ function sheetXml(rows, widths, valids) {
   const dim = 'A1:' + colL(Math.max(0, ...rows.map(r => r.length - 1))) + rows.length;
   const body = rows.map((r, ri) => '<row r="' + (ri + 1) + '">' + r.map((v, ci) => { if (v == null || v === '') return ''; const ref = colL(ci) + (ri + 1), st = ri === 0 && widths ? ' s="1"' : '';
     return typeof v === 'number' ? '<c r="' + ref + '"' + st + '><v>' + v + '</v></c>' : '<c r="' + ref + '" t="s"' + st + '><v>' + sstIx(String(v)) + '</v></c>'; }).join('') + '</row>').join('');
-  const cols = widths ? '<cols>' + widths.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>').join('') + '</cols>' : '<cols><col min="1" max="1" width="110" customWidth="1"/></cols>';
+  const cols = widths ? '<cols>' + widths.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + (w || 1) + '"' + (w ? '' : ' hidden="1"') + ' customWidth="1"/>').join('') + '</cols>' : '<cols><col min="1" max="1" width="110" customWidth="1"/></cols>';
   const dv = valids && valids.length ? '<dataValidations count="' + valids.length + '">' + valids.map(([sq, list]) => '<dataValidation type="list" allowBlank="1" showErrorMessage="1" sqref="' + sq + '"><formula1>"' + list + '"</formula1></dataValidation>').join('') + '</dataValidations>' : '';
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0">' + (widths ? '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>' : '') + '</sheetView></sheetViews>' + cols + '<sheetData>' + body + '</sheetData>' + dv + '</worksheet>';
 }
@@ -188,7 +188,7 @@ export function buildHoldingsXlsx(holdRows, withSamples) {
     ['Your file is read inside your browser and is never sent anywhere.']];
   const ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>';
   const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
-  const sh1 = sheetXml(rows, [16, 16, 8, 44, 9, 9, 16, 12, 14, 12, 12, 14, 12, 22, 24], [['C2:C2000', 'MF,STOCK,SGB,ETF,BOND,OTHER'], ['E2:E2000', 'Direct,Regular'], ['F2:F2000', 'Growth,IDCW,Bonus']]), sh2 = sheetXml(help, null, null);
+  const sh1 = sheetXml(rows, [16, 16, 8, 44, 9, 9, 16, 12, 14, 12, 12, 14, 12, 22, 24, 0], [['C2:C2000', 'MF,STOCK,SGB,ETF,BOND,OTHER'], ['E2:E2000', 'Direct,Regular'], ['F2:F2000', 'Growth,IDCW,Bonus']]), sh2 = sheetXml(help, null, null);
   const sst = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="' + SST.list.length + '" uniqueCount="' + SST.list.length + '">' + SST.list.map(t => '<si><t xml:space="preserve">' + xe(t) + '</t></si>').join('') + '</sst>';
   return zipStore([
     ['[Content_Types].xml', ct],
@@ -217,7 +217,7 @@ export function parseTemplate(sheets) {
     const isin = S(g('ISIN')).toUpperCase(); if (!KIND.has(kind)) { const k2 = classify({ name, isin, sector: S(g('Category / Sector')), itype: '' }); notes.push('Row ' + line + ' (' + name + '): Type "' + kind + '" not recognised, treated as ' + KIND_NAME[k2] + '.'); kind = k2; }
     const po = kind === 'MF' ? planOptionOf(name) : { plan: '', option: '' };
     holdings.push({ broker, accountId: S(g('Client ID / Account')), kind, name, isin, units, avgPrice: N(g('Average buy price')), price: N(g('Latest price / NAV')), priceDate: asDate(g('Price as on')),
-      plan: cap(g('Plan')) || po.plan, option: (S(g('Option')).toUpperCase() === 'IDCW' ? 'IDCW' : cap(g('Option'))) || po.option, amfi: S(g('AMFI scheme code')), folio: S(g('Folio no.')), note: S(g('Notes')), tag: S(g('Category / Sector')) });
+      plan: cap(g('Plan')) || po.plan, option: (S(g('Option')).toUpperCase() === 'IDCW' ? 'IDCW' : cap(g('Option'))) || po.option, amfi: S(g('AMFI scheme code')), folio: S(g('Folio no.')), note: S(g('Notes')), tag: S(g('Category / Sector')), uid: S(g('Arthik ID')) });
   });
   if (!holdings.length) notes.push('No holdings were found in the Holdings sheet.');
   return { holdings, clientId: '', asOn: null, broker: '', notes, multi: true };
@@ -225,12 +225,13 @@ export function parseTemplate(sheets) {
 
 // ---------- matching: ISIN, then AMFI code, then name + plan + option, then name alone ----------
 const nameKey = h => norm(String(h.name || '').replace(/\b(direct|regular|plan|growth|idcw|dividend|bonus|option|fund)\b/gi, ' ').replace(/[^a-z0-9 ]/gi, ' ').replace(/\s+/g, ' '));
+export const newUid = () => 'h' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 export function planImport2(existing, parsed, broker, accountId) {
   const multi = !!parsed.multi, plan = { add: [], update: [], same: [], missing: [], byName: [], dupes: [], dupIsin: [], elsewhere: [] }, used = new Set();
   const live = (existing || []).filter(x => !x.isArchived), brokersIn = new Set(parsed.holdings.map(h => norm(multi ? h.broker : broker)));
   parsed.holdings.forEach(h => {
     const hb = multi ? h.broker : broker, ha = multi ? h.accountId : accountId;
-    const pool = live.filter(x => !used.has(x) && norm(x.broker) === norm(hb) && (!ha || !x.accountId || norm(x.accountId) === norm(ha)));
+    const pool = live.filter(x => !used.has(x) && norm(x.broker) === norm(hb) && (!ha || norm(x.accountId) === norm(ha)));   // a named account only ever matches that same account
     let old = null, how = '';
     if (S(h.isin)) { old = pool.find(x => S(x.isin).toUpperCase() === S(h.isin).toUpperCase()); how = 'isin'; }
     if (!old && S(h.amfi)) { old = pool.find(x => S(x.amfi) && S(x.amfi) === S(h.amfi)); how = 'amfi'; }
@@ -242,7 +243,7 @@ export function planImport2(existing, parsed, broker, accountId) {
     const changed = Math.abs(old.units - h.units) > 1e-6 || Math.abs((old.avgPrice || 0) - h.avgPrice) > 1e-4 || (h.price > 0 && Math.abs((old.price || 0) - h.price) > 1e-4);
     (changed ? plan.update : plan.same).push({ old, now: h });
   });
-  plan.missing = multi ? [] : live.filter(x => brokersIn.has(norm(x.broker)) && !used.has(x) && (multi || !accountId || !x.accountId || norm(x.accountId) === norm(accountId)));
+  plan.missing = multi ? [] : live.filter(x => brokersIn.has(norm(x.broker)) && !used.has(x) && (multi || !accountId || norm(x.accountId) === norm(accountId)));
   // possible duplicates inside the file: same fund name, different plan/option or ids
   const seen = new Map(); parsed.holdings.filter(h => h.kind === 'MF').forEach(h => { const po = planOptionOf(h.name), k = norm(h.broker) + '|' + nameKey(h) + '|' + (h.plan || po.plan) + '|' + (h.option || po.option); (seen.get(k) || seen.set(k, []).get(k)).push(h); });
   seen.forEach(a => { if (a.length > 1) plan.dupes.push(a.map(h => h.name).join('  /  ')); });
@@ -250,14 +251,39 @@ export function planImport2(existing, parsed, broker, accountId) {
   const byIsin = new Map(); parsed.holdings.forEach(h => { const i = S(h.isin).toUpperCase(); if (!i) return; const k = norm(multi ? h.broker : broker) + '|' + i; (byIsin.get(k) || byIsin.set(k, []).get(k)).push(h); });
   byIsin.forEach((a, k) => { if (a.length > 1) plan.dupIsin.push(k.split('|')[1] + ': ' + a.map(h => h.name).join(' / ')); });
   // a New row whose ISIN already exists under another broker or client ID
-  plan.elsewhere = plan.add.map(h => { const i = S(h.isin).toUpperCase(); if (!i) return null; const o = live.find(x => S(x.isin).toUpperCase() === i); return o ? h.name + ' is also saved under ' + (o.broker || 'no broker') + (o.accountId ? ' / ' + o.accountId : '') : null; }).filter(Boolean);
+  plan.elsewhere = plan.add.map(h => { const i = S(h.isin).toUpperCase(); if (!i) return null; const o = live.find(x => S(x.isin).toUpperCase() === i); return o ? h.name + ' is also saved under ' + (o.broker || 'no broker') + (o.accountId ? ' / ' + o.accountId : ' (no client ID)') + ' (that one is not changed)' : null; }).filter(Boolean);
   return plan;
 }
 export function applyImport2(book, plan, ctx, removeMissing) {
   const arr = book.brokerHoldings = book.brokerHoldings || [], when = ctx.asOn || Date.now();
   const rec = (h, base) => Object.assign(base, { broker: h.broker || ctx.broker, accountId: h.accountId || ctx.accountId || base.accountId || '', kind: h.kind, name: h.name, isin: h.isin || base.isin || '', units: h.units, avgPrice: h.avgPrice, price: h.price > 0 ? h.price : (base.price || 0), priceDate: h.priceDate || when, tag: h.tag || base.tag || '', plan: h.plan || base.plan || '', option: h.option || base.option || '', amfi: h.amfi || base.amfi || '', folio: h.folio || base.folio || '', note: h.note || base.note || '', isArchived: false });
-  plan.add.forEach(h => arr.push(rec(h, {})));
+  plan.add.forEach(h => arr.push(rec(h, { uid: newUid() })));
   plan.update.forEach(({ old, now }) => { const nm = old.name; rec(now, old); if (S(nm)) old.name = nm; });
   plan.same.forEach(({ old, now }) => { old.priceDate = now.priceDate || when; if (!old.accountId && (now.accountId || ctx.accountId)) old.accountId = now.accountId || ctx.accountId; });
   if (removeMissing) plan.missing.forEach(x => { x.isArchived = true; x.deletedAt = Date.now(); });
+}
+
+// ---------- update-only: change saved holdings from an edited "my holdings" file; nothing is added or removed ----------
+const UPD = [['broker', 'broker'], ['accountId', 'client ID'], ['name', 'name'], ['kind', 'type'], ['plan', 'plan'], ['option', 'option'], ['isin', 'ISIN'], ['amfi', 'AMFI code'], ['folio', 'folio'], ['units', 'quantity'], ['avgPrice', 'average price'], ['price', 'latest price'], ['tag', 'category'], ['note', 'notes']];
+export function planUpdate(existing, parsed) {
+  const live = (existing || []).filter(x => !x.isArchived), plan = { change: [], same: 0, noId: [], notFound: [] };
+  parsed.holdings.forEach(h => {
+    if (!S(h.uid)) { plan.noId.push(h.name); return; }
+    const old = live.find(x => x.uid === h.uid); if (!old) { plan.notFound.push(h.name); return; }
+    const patch = {}, text = [];
+    UPD.forEach(([k, label]) => {
+      const nv = h[k]; let ov = old[k]; if ((k === 'plan' || k === 'option') && !S(ov)) ov = planOptionOf(old.name)[k] || '';
+      if (k === 'price' || k === 'units' || k === 'avgPrice') { if (k === 'price' && !(nv > 0)) return; if (Math.abs((+ov || 0) - (+nv || 0)) > 1e-4) { patch[k] = +nv; text.push(label + ' ' + +(+ov || 0).toFixed(4) + ' → ' + +(+nv).toFixed(4)); } return; }
+      if (S(nv) !== S(ov)) { patch[k] = S(nv); text.push(label + ' ' + (S(ov) || '(empty)') + ' → ' + (S(nv) || '(empty)')); }
+    });
+    if (patch.price != null && h.priceDate) patch.priceDate = h.priceDate;
+    if (text.length) plan.change.push({ old, patch, text, name: old.name }); else plan.same++;
+  });
+  return plan;
+}
+export function applyUpdate(book, plan) {
+  plan.change.forEach(({ old, patch }) => {
+    if (patch.name && patch.name !== old.name) (book.goals || []).forEach(g => (g.linkedAssets || []).forEach(l => { if ((l.type === 'MUTUAL_FUND' || l.type === 'DEMAT') && l.name === old.name) l.name = patch.name; }));
+    Object.assign(old, patch);
+  });
 }

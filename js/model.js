@@ -174,7 +174,7 @@ function goalProgress(book, cats) {
       linked.push({ cat: cat.label, name: l.name, value: item.value, excluded: !!item.excluded });
       if (!item.excluded) current += item.value;
     });
-    return { src: g, name: g.name, target: g.targetAmount, targetDate: g.targetDate, current, linked, pct: g.targetAmount > 0 ? Math.min(100, current / g.targetAmount * 100) : 0 };
+    return { src: g, name: g.name, target: g.targetAmount, targetDate: g.targetDate, current, linked, pct: g.targetAmount > 0 ? current / g.targetAmount * 100 : 0 };
   });
 }
 
