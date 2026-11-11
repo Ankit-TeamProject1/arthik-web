@@ -1,6 +1,6 @@
 // Keeps the app shell available offline. Network first, so an update shows up as soon as you are online.
-const V = 'arthik-web-0.7.6';
-const SHELL = ['./', 'index.html', 'icons/logo.png', 'css/app.css', 'js/app.js', 'js/config.js', 'js/crypto.js', 'js/dropbox.js', 'js/calc.js', 'js/model.js', 'js/lists.js', 'js/recurring.js', 'js/broker.js', 'manifest.webmanifest'];
+const V = 'arthik-web-0.7.7';
+const SHELL = ['./', 'index.html', 'icons/logo.png', 'css/app.css', 'js/app.js', 'js/config.js', 'js/crypto.js', 'js/dropbox.js', 'js/calc.js', 'js/model.js', 'js/lists.js', 'js/recurring.js', 'js/broker.js', 'js/prices.js', 'manifest.webmanifest'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(V).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== V).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', e => {

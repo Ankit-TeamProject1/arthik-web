@@ -3,6 +3,7 @@ import * as dbx from './dropbox.js';
 import { optionList, sameName, KIND_LABEL } from './lists.js';
 import { encrypt, decrypt, isEncrypted } from './crypto.js';
 import { loanEmi, loanSchedule } from './calc.js';
+import { stockPrice, marketPrices, metalRates, caratRate } from './prices.js';
 import { RTYPES, recurringItems, eventItems, allDue, confirmInBook, declineInBook, rentPending, calendarEvents, buildIcs, googleLink, eventTitle } from './recurring.js';
 import { readFile, parseStatement, parseTemplate, planUpdate, applyUpdate, newUid, planImport2 as planImport, applyImport2 as applyImport, buildHoldingsXlsx, classify, planOptionOf, KINDS, KIND_NAME } from './broker.js';
 import { GOAL_MAP, assetLabel, utcMonth, CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, setMask, money, pct, fmtDate, metalLabel, price2 } from './model.js';
@@ -11,6 +12,8 @@ const root = document.getElementById('app');
 const S = { pw: null, enc: null, rev: null, modified: null, data: null, bookIdx: 0, offline: false, error: '', busy: false };
 
 // ---------- tiny DOM helper (text is always set as text, never as HTML) ----------
+// Never print the word "null": skip empty children everywhere replaceChildren / append are used.
+['replaceChildren', 'append', 'prepend'].forEach(m => { const o = Element.prototype[m]; Element.prototype[m] = function (...k) { return o.apply(this, k.filter(x => x != null && x !== false)); }; });
 function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -93,7 +96,7 @@ function screenUnlock(note) {
     const r = await decrypt(S.enc, pw.value);
     if (!r.ok) { S.error = r.reason === 'wrong' ? 'That password is not correct.' : 'This file could not be read.'; return screenUnlock(); }
     try { S.data = JSON.parse(r.text); } catch { S.error = 'This file could not be read.'; return screenUnlock(); }
-    S.error = ''; S.pw = pw.value; S.bookIdx = 0; touch(); route();
+    S.error = ''; S.pw = pw.value; S.bookIdx = 0; touch(); route(); autoPricesOnLogin();
   };
   const btn = h('button', { class: 'btn primary big', onclick: go }, 'Unlock');
   pw.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
@@ -321,7 +324,7 @@ function pageDashboard() {
     h('section', { class: 'card alloc' }, d.svg, h('ul', { class: 'legend' }, d.parts.sort((a, b) => b.total - a.total).map(p => h('li', null, h('span', { class: 'sw', style: { background: p.color } }), `${p.label} ${(p.total / d.tot * 100).toFixed(1)}%`))))),
     h('h2', null, 'Categories'), h('div', { class: 'grid g3d' }, tiles),
     comingUp(book),
-    h('div', { class: 'small' }, 'Prices and NAVs are the last ones saved by your phone. Live refresh arrives in a later phase.'));
+    h('div', { class: 'small' }, 'Prices are the last ones saved. Use Refresh prices on Investments to update them.'));
 }
 
 // ---- sorting of cards (by opening date by default) ----
@@ -375,10 +378,10 @@ function comingUp(book) {
   return h('div', null, h('h2', null, 'Coming up (next 30 days)'), h('div', { class: 'list' }, ev.map(e => h('a', { class: 'item clk', href: '#/recurring', 'data-deco': deco(e.key) },
     h('div', { class: 'irow' }, h('div', { class: 'iname' }, e.verb + ' ' + e.name), h('div', { class: 'ival' }, e.amount ? money(e.amount) : '')), h('div', { class: 'isub' }, fmtDate(e.date))))));
 }
-function itemCard(it, key, look) {
-  const ed = canEdit() && key && WSPEC[key] && it.src;
+function itemCard(it, key, look, pick) {
+  const ed = !pick && canEdit() && key && WSPEC[key] && it.src;
   const dd = look || DECO[key], cdef = dd ? { color: dd[0], ill: dd[1] } : null;
-  return h('div', { class: 'item' + (cdef ? ' acc' : '') + (ed ? ' clk' : ''), style: cdef ? { '--acc': cdef.color } : null, role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed ? () => openWealth(key, it) : null, onkeydown: ed ? e => { if (e.key === 'Enter') openWealth(key, it); } : null },
+  return h('div', { class: 'item' + (cdef ? ' acc' : '') + (ed || pick ? ' clk' : ''), style: cdef ? { '--acc': cdef.color } : null, role: ed || pick ? 'button' : null, tabindex: ed || pick ? 0 : null, onclick: pick || (ed ? () => openWealth(key, it) : null), onkeydown: pick ? e => { if (e.key === 'Enter') pick(); } : ed ? e => { if (e.key === 'Enter') openWealth(key, it); } : null },
     it.excluded ? h('div', { class: 'excl' }, 'Not in Net Worth') : null,
     h('div', { class: 'irow' }, h('div', { class: 'iname' }, cdef ? h('img', { class: 'iill', src: 'icons/ill/' + cdef.ill + '.svg', alt: '', width: 36, height: 36 }) : null, it.name, wPill(it.src)), h('div', { class: 'ival' }, money(it.value))),
     it.sub ? h('div', { class: 'isub' }, it.sub) : null,
@@ -399,12 +402,59 @@ function pageCategory(key) {
 
 // ---------- Investments: mutual funds, stocks, SGB, ETF and bonds in one place ----------
 let invBroker = '', invKind = '';
+const invSel = { on: false, keys: new Set() };
+const hkey = x => [x.broker, x.accountId, x.name, x.plan, x.option, x.kind].map(v => String(v || '').trim().toLowerCase()).join('|');
 const brokerOf = it => String(it.hold ? it.broker : (it.src && (it.src.accountName || it.src.platformName)) || '').trim();
 const acctOf = it => String(it.hold && it.src ? it.src.accountId || '' : '').trim();
 const acctKey = (b, a) => b + '||' + (a || '');
 const acctLabel = k => { const [b, a] = k.split('||'); return b + (a ? ' · ' + a : ''); };
 const KIND_LOOK = { MF: ['#7C3AED', 'mf'], STOCK: ['#2563EB', 'demat'], SGB: ['#D97706', 'gold'], ETF: ['#0D9488', 'bank'], BOND: ['#16A34A', 'fd'], OTHER: ['#64748B', 'manual'] };
 const kindOf = it => it.hold ? it.kind : it._cat === 'mf' ? 'MF' : classify({ name: it.name, isin: '', sector: '', itype: '' });
+// ---------- Live prices ----------
+const priceCfg = () => (S.data && S.data.priceSettings) || {};
+const todayKey = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+let priceBusy = false, marketAt = 0, priceHint = '';
+async function syncMetals(quiet) {
+  const cfg = priceCfg(); if (priceBusy) return; priceBusy = true;
+  try {
+    const rates = await metalRates(cfg.goldKey, cfg.relay); let n = 0;
+    await mutate(d => { const now = Date.now(); wealthBooks(d).forEach(b => {
+      (b.metalHoldings || []).filter(m => !m.isArchived).forEach(m => { const p = caratRate(m, rates); if (p) { m.currentPricePerGram = p; m.lastUpdatedAt = now; n++; } });
+      (b.brokerHoldings || []).filter(x => !x.isArchived && x.kind === 'SGB').forEach(x => { x.price = Math.round(rates.gold['24K'] * 100) / 100; x.priceDate = now; n++; }); });
+      d.priceSettings = { ...(d.priceSettings || {}), metalDay: todayKey(), metalAt: now }; });
+    if (!quiet || n) toast(n ? 'Gold & silver rates updated (' + n + ' items) ✓' : 'Gold & silver rates fetched — no gold/silver items to update'); return true;
+  } catch (e) { toast('Gold & silver: ' + e.message, true); return false; }
+  finally { priceBusy = false; }
+}
+async function syncMarket(manual) {
+  if (priceBusy || !S.data) return; priceBusy = true; marketAt = Date.now(); priceHint = '';
+  try {
+    const all = []; wealthBooks(S.data).forEach(b => (b.brokerHoldings || []).forEach(x => { if (x.uid && ['MF', 'STOCK', 'ETF'].includes(x.kind)) all.push(x); }));
+    if (!all.length) { if (manual) toast('No stocks, ETFs or funds to refresh'); return; }
+    if (manual) toast('Fetching prices…');
+    const r = await marketPrices(all, priceCfg().relay);
+    if (r.blocked) { priceHint = 'Live prices need the price relay. Set it up in Settings › Prices.'; toast(priceHint, true); route(); return; }
+    if (r.prices.size) await mutate(d => { const now = Date.now(); wealthBooks(d).forEach(b => (b.brokerHoldings || []).forEach(x => { const p = r.prices.get(x.uid); if (p) { x.price = p; x.priceDate = now; } })); });
+    toast(r.prices.size + ' prices updated ✓' + (r.failed.length ? ' · could not fetch: ' + r.failed.slice(0, 5).join(', ') + (r.failed.length > 5 ? ' +' + (r.failed.length - 5) + ' more' : '') + ' (old price kept)' : ''), !!r.failed.length && !r.prices.size);
+    view.cache = null; route();
+  } catch (e) { toast('Prices: ' + e.message, true); }
+  finally { priceBusy = false; }
+}
+function autoPricesOnLogin() { const c = priceCfg(); if (c.goldKey && c.metalDay !== todayKey() && canEdit()) syncMetals(true); }
+function openPriceSettings() {
+  sheetForm('Live prices', api => {
+    const c = priceCfg(), relay = h('input', { type: 'url', value: c.relay || '', placeholder: 'https://arthik-relay.yourname.workers.dev', autocomplete: 'off', 'aria-label': 'Price relay address' }), key = h('input', { type: 'password', value: c.goldKey || '', placeholder: 'GoldAPI.io key (for gold & silver)', autocomplete: 'off', 'aria-label': 'GoldAPI key' });
+    const save = h('button', { type: 'button', class: 'btn primary big' }, 'Save');
+    save.onclick = () => { const rv = relay.value.trim(); if (rv && !/^https:\/\//i.test(rv)) return api.fail('The relay address must start with https://');
+      api.run(save, 'Saving…', () => mutate(d => { d.priceSettings = { ...(d.priceSettings || {}), relay: rv.replace(/\/+$/, ''), goldKey: key.value.trim() }; })).then(ok => ok && toast('Saved ✓')); };
+    return h('div', null,
+      h('p', { class: 'small' }, 'Stocks, ETFs and mutual funds use free Yahoo and AMFI data; gold and silver use GoldAPI.io (your own free key). Browsers block these sites, so a tiny free “price relay” is needed — the setup code is in the file relay-worker.js in this app’s zip.'),
+      h('div', { class: 'flbl' }, 'Price relay address'), relay, h('div', { class: 'flbl' }, 'GoldAPI key (stored encrypted in your data file)'), key,
+      h('p', { class: 'small' }, c.metalAt ? 'Gold & silver last updated ' + new Date(c.metalAt).toLocaleString('en-IN') + '. They refresh once a day on your first sign-in.' : 'Gold & silver refresh once a day on your first sign-in, once a key is saved.'),
+      h('div', { class: 'actions' }, save, h('button', { type: 'button', class: 'btn', onclick: () => { api.close(); syncMetals(false); } }, 'Sync gold & silver now'), h('button', { type: 'button', class: 'btn', onclick: () => { api.close(); syncMarket(true); } }, 'Refresh stocks & funds now')));
+  });
+}
+
 function pageInvest() {
   const c = computed(), all = [...c.byKey.mf.items.map(i => ({ ...i, _cat: 'mf' })), ...c.byKey.demat.items.map(i => ({ ...i, _cat: 'demat' }))];
   const saved = (currentBook().brokerAccounts || []).filter(a => a.broker).map(a => acctKey(a.broker, a.accountId));
@@ -418,17 +468,61 @@ function pageInvest() {
   const list = byB.filter(i => !invKind || kindOf(i) === invKind), cnt = a => a.filter(i => !i.excluded);
   const val = cnt(list).reduce((a, i) => a + i.value, 0), cost = cnt(list).reduce((a, i) => a + (i.cost || 0), 0), gain = cost > 0 ? (val - cost) / cost * 100 : null;
   const tab = (label, on, fn, n) => h('button', { type: 'button', class: 'chip2' + (on ? ' on' : ''), onclick: () => { fn(); route(); } }, label, n != null ? h('span', { class: 'cnt' }, ' ' + n) : null);
+  if (canEdit() && !priceBusy && Date.now() - marketAt > 5 * 60000 && all.length) setTimeout(() => syncMarket(false), 50);
   return h('div', null, backLink('#/dashboard', 'Home'), bookHeader('Investments', 'Mutual funds, stocks, SGB, ETF and bonds'),
+    canEdit() ? h('div', { class: 'row', style: { margin: '0 0 8px' } }, h('button', { class: 'btn', onclick: () => syncMarket(true) }, '🔄 Refresh prices'), h('button', { class: 'link', onclick: openPriceSettings }, 'Price settings')) : null, priceHint ? h('p', { class: 'small' }, priceHint) : null,
     h('section', null, h('div', { class: 'lbl' }, 'Value' + (invBroker ? ' · ' + (invBroker === '-' ? 'not linked' : acctLabel(invBroker)) : '') + (invKind ? ' · ' + KIND_NAME[invKind] : '')), h('div', { class: 'big2' }, money(val)),
       h('div', { class: 'isub' }, 'Invested ' + money(cost) + (gain === null ? '' : ' · ' + (val >= cost ? 'Gain ' : 'Loss ') + money(Math.abs(val - cost)) + ' (' + pct(gain) + ')'))),
     canEdit() ? h('div', { class: 'row', style: { margin: '0 0 12px' } }, h('button', { class: 'btn primary', onclick: () => openUpload() }, 'Upload broker statement'),
       h('button', { class: 'btn primary', onclick: () => openWealth('hold', null, { broker: invBroker && invBroker !== '-' ? invBroker.split('||')[0] : '', accountId: invBroker && invBroker !== '-' ? invBroker.split('||')[1] : '', kind: invKind || 'STOCK' }) }, '+ Add holding'),
-      h('button', { class: 'btn ghost', onclick: openExcelMenu }, 'Excel ▾')) : null,
+      h('button', { class: 'btn ghost', onclick: openExcelMenu }, 'Excel ▾'), list.some(i => i.hold) ? h('button', { class: 'btn ghost', onclick: () => { invSel.on = true; invSel.keys.clear(); route(); } }, 'Select') : null) : null,
+    invSel.on ? invSelBar(list) : null,
     canEdit() && legacyList(currentBook()).length ? h('div', { class: 'okbox' }, h('b', null, legacyList(currentBook()).length + ' older entr' + (legacyList(currentBook()).length > 1 ? 'ies' : 'y') + ' in the old format. '), 'Move them into the new list to manage everything in one place. ', h('button', { class: 'btn', type: 'button', onclick: openConvertOld }, 'Move to new list')) : null,
     accts.length || unlinked ? h('div', { class: 'tabrow', role: 'tablist', 'aria-label': 'Account' }, tab('All accounts', !invBroker, () => { invBroker = ''; }), accts.map(b => tab(acctLabel(b), b.toLowerCase() === invBroker.toLowerCase(), () => { invBroker = b; })), unlinked && accts.length ? tab('Not linked', invBroker === '-', () => { invBroker = '-'; }) : null, canEdit() ? h('button', { type: 'button', class: 'chip2 addacc', onclick: openAddAccount }, '+ Account') : null) : (canEdit() ? h('div', { class: 'tabrow' }, h('button', { type: 'button', class: 'chip2 addacc', onclick: openAddAccount }, '+ Account')) : null),
     kinds.length ? h('div', { class: 'tabrow', role: 'tablist', 'aria-label': 'Type' }, tab('All', !invKind, () => { invKind = ''; }, byB.length), kinds.map(([k, l, a]) => { const b = tab(l, invKind === k, () => { invKind = k; }, a.length); b.style.setProperty('--kc', (KIND_LOOK[k] || KIND_LOOK.OTHER)[0]); b.classList.add('kc'); return b; })) : null,
     list.length > 1 ? sortBar() : null,
-    list.length ? h('div', { class: 'list' }, sortItems(list).map(it => itemCard(it, it.hold ? 'hold' : it._cat, KIND_LOOK[kindOf(it)] || KIND_LOOK.OTHER))) : h('p', { class: 'empty' }, canEdit() ? 'Nothing here yet. Upload your broker statement, or add a holding.' : 'Nothing here yet.'));
+    list.length ? h('div', { class: 'list' }, sortItems(list).map(it => { const look = KIND_LOOK[kindOf(it)] || KIND_LOOK.OTHER; if (!invSel.on) return itemCard(it, it.hold ? 'hold' : it._cat, look);
+      if (!it.hold) { const c0 = itemCard(it, it._cat, look, () => toast('Older entry: use Move to new list first, then select it.')); c0.style.opacity = '.55'; return c0; }
+      const k = hkey(it.src), card = itemCard(it, 'hold', look, () => { invSel.keys.has(k) ? invSel.keys.delete(k) : invSel.keys.add(k); route(); }); card.classList.add('pickable'); if (invSel.keys.has(k)) card.classList.add('picked'); card.prepend(h('span', { class: 'pickbox', 'aria-hidden': 'true' })); return card; })) : h('p', { class: 'empty' }, canEdit() ? 'Nothing here yet. Upload your broker statement, or add a holding.' : 'Nothing here yet.'));
+}
+// bulk edit of holdings: select, then move to another account, change type, set Client ID, or delete
+function invSelBar(list) {
+  const vis = list.filter(i => i.hold).map(i => hkey(i.src)), n = vis.filter(k => invSel.keys.has(k)).length;
+  const cls = btn => h('button', { type: 'button', class: 'btn' + (btn[2] || ''), disabled: !n && !btn[3], onclick: btn[1] }, btn[0]);
+  return h('div', { class: 'okbox' }, h('b', null, n + ' selected'), h('div', { class: 'selbar', style: { marginTop: '8px' } },
+    [['Select all (' + vis.length + ')', () => { vis.forEach(k => invSel.keys.add(k)); route(); }, '', 1], ['Clear', () => { invSel.keys.clear(); route(); }, '', 1], ['Cancel', () => { invSel.on = false; invSel.keys.clear(); route(); }, ' ghost', 1]].map(cls)),
+    h('div', { class: 'selbar' }, [['Move to account…', () => openBulk('move'), ' primary'], ['Set Client ID…', () => openBulk('cid'), ' primary'], ['Change type…', () => openBulk('type'), ' primary'], ['Delete', () => openBulk('del'), ' danger']].map(cls)));
+}
+function openBulk(mode) {
+  const book = currentBook(), keys = new Set(invSel.keys), picked = (book.brokerHoldings || []).filter(x => !x.isArchived && keys.has(hkey(x)));
+  if (!picked.length) return;
+  const value = picked.reduce((a, x) => a + (+x.units || 0) * ((+x.price > 0 ? +x.price : +x.avgPrice) || 0), 0), st = { broker: '', account: '', kind: picked[0].kind }, newPicks = [];
+  const title = { move: 'Move to account', cid: 'Set Client ID', type: 'Change type', del: 'Delete holdings' }[mode];
+  sheetForm(title + ' (' + picked.length + ')', api => {
+    const bBtn = h('button', { type: 'button', class: 'btn pickbtn' }), aBtn = h('button', { type: 'button', class: 'btn pickbtn' });
+    const paint = () => { bBtn.textContent = st.broker || 'Keep each holding\'s broker'; aBtn.textContent = st.account || 'Choose client ID / account…'; }; paint();
+    bBtn.onclick = () => openBankPicker(st.broker, optionList('broker', S.data), (n, isNew) => { st.broker = n; if (isNew) newPicks.push({ kind: 'broker', name: n }); paint(); }, 'broker');
+    aBtn.onclick = () => openBankPicker(st.account, optionList('clientid', S.data), (n, isNew) => { st.account = n; if (isNew) newPicks.push({ kind: 'clientid', name: n }); paint(); }, 'clientid');
+    const okBtn = h('button', { type: 'button', class: 'btn big ' + (mode === 'del' ? 'danger' : 'primary') }, mode === 'del' ? 'Delete ' + picked.length + ' (restorable)' : 'Apply to ' + picked.length);
+    const warn = h('div', { class: 'small' });
+    const dups = () => { if (mode !== 'move' && mode !== 'cid') return []; return picked.filter(x => { const b2 = st.broker || x.broker, a2 = mode === 'cid' || mode === 'move' ? st.account : x.accountId; return (book.brokerHoldings || []).some(y => !y.isArchived && !keys.has(hkey(y)) && sameName(y.broker, b2) && sameName(y.accountId, a2) && sameName(y.name, x.name) && (y.plan || '') === (x.plan || '') && (y.option || '') === (x.option || '') && y.kind === x.kind); }); };
+    okBtn.onclick = () => {
+      if ((mode === 'move' || mode === 'cid') && !st.account.trim()) return api.fail('Choose the client ID / account.');
+      const d0 = dups(); if (d0.length && !confirm(d0.length + ' holding(s) already exist with the same name in that account (for example ' + d0[0].name + '). Moving would create duplicates. Continue?')) return;
+      api.run(okBtn, 'Saving…', () => mutateWealth((b, d) => {
+        newPicks.forEach(({ kind, name }) => { d.customLists = d.customLists || {}; d.customLists[kind] = d.customLists[kind] || []; if (!optionList(kind, d).some(x => sameName(x, name))) d.customLists[kind].push(name); });
+        const hit = (b.brokerHoldings || []).filter(x => !x.isArchived && keys.has(hkey(x))); if (!hit.length) throw new Error('These holdings were changed on another device. Nothing was changed.');
+        hit.forEach(x => { if (mode === 'del') { x.isArchived = true; x.deletedAt = Date.now(); } else if (mode === 'type') x.kind = st.kind; else { if (mode === 'move' && st.broker) x.broker = st.broker; x.accountId = st.account.trim(); } });
+      })).then(ok => { if (ok) { invSel.on = false; invSel.keys.clear(); toast(picked.length + (mode === 'del' ? ' deleted ✓' : ' updated ✓')); route(); } });
+    };
+    return h('div', null,
+      h('p', { class: 'small' }, picked.length + ' holding' + (picked.length > 1 ? 's' : '') + ' · about ' + money(value) + '. ' + picked.slice(0, 4).map(x => x.name).join(', ') + (picked.length > 4 ? '…' : '')),
+      mode === 'move' ? h('div', null, h('div', { class: 'flbl' }, 'Broker / platform (optional)'), bBtn) : null,
+      mode === 'move' || mode === 'cid' ? h('div', null, h('div', { class: 'flbl' }, 'Client ID / account'), aBtn, h('p', { class: 'small' }, 'Type a new name in the list to create a new account.')) : null,
+      mode === 'type' ? h('div', null, h('div', { class: 'flbl' }, 'New type'), chipRow(KINDS, () => st.kind, v => { st.kind = v; })) : null,
+      mode === 'del' ? h('p', null, 'These holdings move to Recently deleted. You can bring them back from there (Settings, then Recently deleted, Select several).') : null,
+      warn, h('div', { class: 'actions' }, okBtn));
+  });
 }
 // a named account (broker + client ID / nickname) that exists before any holding is saved in it
 function openAddAccount() {
@@ -969,10 +1063,16 @@ function openBudget(cat, cap) {
 }
 
 // One table for all budgets of the month: type an amount against each category, leave the rest blank.
-function openBudgetTable() {
+function avg3Budgets() {
+  const c = computed(), now = new Date(), out = {}; const starts = [1, 2, 3].map(k => new Date(now.getFullYear(), now.getMonth() + em - k, 1).getTime()), lo = starts[2], hi = new Date(now.getFullYear(), now.getMonth() + em, 1).getTime();
+  c.txs.forEach(t => { if (t.type === 'EXPENSE' && t.categoryLocalId != null && t.occurredAt >= lo && t.occurredAt < hi) out[t.categoryLocalId] = (out[t.categoryLocalId] || 0) + t.amount; });
+  Object.keys(out).forEach(k => { out[k] = Math.max(10, Math.round(out[k] / 3 / 10) * 10); }); return out;
+}
+function openBudgetTable(avg) {
   const book = currentBook(), c = computed(), month = utcMonth(monthNow());
   const cats = (book.categories || []).filter(x => !x.isArchived);
   const cur = Object.fromEntries((book.budgets || []).filter(b => b.month === month).map(b => [b.categoryLocalId, b.capAmount]));
+  if (avg && typeof avg === 'object') Object.assign(cur, avg);
   sheetForm('Budgets for ' + monthLabel(em), api => {
     const inputs = cats.map(x => ({ x, el: h('input', { type: 'text', inputmode: 'decimal', class: 'bamt', value: cur[x.localId] != null ? String(cur[x.localId]) : '', placeholder: '—', 'aria-label': 'Budget for ' + x.name, autocomplete: 'off' }) }));
     const save = h('button', { type: 'button', class: 'btn primary big' }, 'Save budgets');
@@ -982,7 +1082,7 @@ function openBudgetTable() {
       api.run(save, 'Saving…', () => mutateBook(b => { b.budgets = (b.budgets || []).filter(y => y.month !== month || !cats.some(x => x.localId === y.categoryLocalId));
         Object.entries(vals).forEach(([id, v]) => b.budgets.push({ categoryLocalId: +id, month, capAmount: v })); })).then(ok => ok && toast('Budgets saved ✓'));
     };
-    return h('div', null, h('p', { class: 'small' }, 'Type a monthly limit for each category you want to track. Leave a box blank for no budget (blanking an existing one removes it).'),
+    return h('div', null, avg && typeof avg === 'object' ? h('p', { class: 'small' }, '📊 Filled from your average spend over the previous 3 months (rounded to ₹10). Change any box, then press Save — nothing is saved until you do.') : null, h('p', { class: 'small' }, 'Type a monthly limit for each category you want to track. Leave a box blank for no budget (blanking an existing one removes it).'),
       h('div', { class: 'btable' }, inputs.map(({ x, el }) => h('label', { class: 'brow' }, h('span', { class: 'bname' }, h('span', { class: 'sw', style: { background: catColors(c)[x.localId] } }), x.name), h('span', { class: 'bin' }, '₹', el)))),
       h('div', { class: 'actions' }, save));
   });
@@ -1456,7 +1556,8 @@ function pageExpenseDashboard() {
     comingUp(book));
 }
 
-const ef = { settle: 'ALL', q: '', type: 'ALL', month: 'ALL', cat: 'ALL', acc: 'ALL', limit: 100 };
+let efOpen = false;
+const ef = { settle: 'ALL', q: '', type: 'ALL', month: 'ALL', cat: 'ALL', acc: 'ALL', amin: '', amax: '', dfrom: '', dto: '', limit: 100 };
 function pageEntries() {
   const c = computed();
   const months = [...new Set(c.txs.map(t => { const d = new Date(t.occurredAt); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); }))];
@@ -1467,6 +1568,10 @@ function pageEntries() {
     if (ef.acc !== 'ALL' && String(t.accountLocalId) !== ef.acc && String(t.toAccountLocalId) !== ef.acc) return false;
     const d = new Date(t.occurredAt), mk = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
     if (ef.month !== 'ALL' && mk !== ef.month) return false;
+    if (ef.amin !== '' && t.amount < +ef.amin) return false;
+    if (ef.amax !== '' && t.amount > +ef.amax) return false;
+    if (ef.dfrom && t.occurredAt < new Date(ef.dfrom + 'T00:00:00').getTime()) return false;
+    if (ef.dto && t.occurredAt > new Date(ef.dto + 'T23:59:59.999').getTime()) return false;
     if (ef.settle !== 'ALL') { const sl = t.settle; if (!sl) return false; if (ef.settle === 'PAID' ? !sl.paid : (sl.paid || sl.kind !== ef.settle)) return false; }
     if (!q) return true;
     const cat = c.cat[t.categoryLocalId], a = c.acc[t.accountLocalId];
@@ -1477,14 +1582,20 @@ function pageEntries() {
   const search = h('input', { type: 'search', placeholder: 'Search note, category, account, person or amount', value: ef.q, 'aria-label': 'Search entries' });
   search.addEventListener('change', () => { ef.q = search.value; ef.limit = 100; route(); });
   const sel = (opts, cur, set, label) => h('select', { 'aria-label': label, onchange: e => { set(e.target.value); ef.limit = 100; route(); } }, opts.map(([v, l]) => h('option', { value: v, selected: v === cur }, l)));
+  const rng = (label, key, type, ph) => h('label', { class: 'rng' }, h('span', null, label), h('input', { type, value: ef[key], placeholder: ph || '', inputmode: type === 'number' ? 'decimal' : null, 'aria-label': label, onchange: e => { ef[key] = e.target.value; ef.limit = 100; route(); } }));
+  const nAct = [ef.type, ef.cat, ef.acc, ef.settle, ef.month].filter(x => x !== 'ALL').length + [ef.amin, ef.amax, ef.dfrom, ef.dto].filter(Boolean).length;
+  const anyRng = ef.amin !== '' || ef.amax !== '' || ef.dfrom || ef.dto;
   const groups = []; shown.forEach(t => { const k = dayLabel(t.occurredAt); const g = groups[groups.length - 1]; if (g && g.k === k) g.rows.push(t); else groups.push({ k, rows: [t] }); });
   return h('div', null, bookHeader('Entries', currentBook().name),
-    h('div', { class: 'filters' }, search,
+    h('div', { class: 'filters' }, search, h('button', { class: 'btn fbtn', type: 'button', onclick: () => { efOpen = !efOpen; route(); } }, (efOpen ? 'Hide filters' : 'Filters') + (nAct ? ' · ' + nAct : ''))),
+    h('div', { class: 'filters fgrid' + (efOpen ? ' open' : '') },
       sel([['ALL', 'All types'], ['EXPENSE', 'Expenses'], ['INCOME', 'Income'], ['TRANSFER', 'Transfers']], ef.type, v => ef.type = v, 'Type'),
       sel([['ALL', 'All categories'], ...(c.catList || Object.values(c.cat)).map(x => [String(x.localId), x.name])], ef.cat, v => ef.cat = v, 'Category'),
       sel([['ALL', 'All accounts'], ...Object.values(c.acc).map(a => [String(a.localId), niceName(a.name) + (accType(a) ? ' (' + accType(a) + ')' : '')])], ef.acc, v => ef.acc = v, 'Account'),
       sel([['ALL', 'Owed / owing: all'], ['OWED_TO_ME', 'Owed to me (open)'], ['I_OWE', 'I owe (open)'], ['PAID', 'Settled']], ef.settle, v => ef.settle = v, 'Owed or owing'),
       sel([['ALL', 'All months'], ...months.map(m => [m, new Date(m + '-15').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })])], ef.month, v => ef.month = v, 'Month')),
+    h('div', { class: 'filters rngrow' + (efOpen ? ' open' : '') }, rng('Min ₹', 'amin', 'number', 'any'), rng('Max ₹', 'amax', 'number', 'any'), rng('From', 'dfrom', 'date'), rng('To', 'dto', 'date'),
+      anyRng ? h('button', { class: 'btn', type: 'button', onclick: () => { ef.amin = ef.amax = ef.dfrom = ef.dto = ''; route(); } }, 'Clear range') : null),
     h('div', { class: 'hsub', style: { margin: '10px 0' } }, h('span', null, rows.length + ' entries'), h('span', null, 'Spent ', h('b', { class: 'down' }, money(spent))), h('span', null, 'Income ', h('b', { class: 'up' }, money(got)))),
     h('section', { class: 'card' }, groups.map(g => h('div', null, h('div', { class: 'dayh' }, g.k), g.rows.map(t => txRow(t, c)))), rows.length ? null : h('p', { class: 'empty' }, c.txs.length ? 'No entries match these filters. Try clearing the search or choosing “All”.' : 'No entries yet.')),
     rows.length > shown.length ? h('button', { class: 'btn', onclick: () => { ef.limit += 200; route(); } }, `Show more (${rows.length - shown.length} left)`) : null);
@@ -1498,7 +1609,8 @@ function pageBudgets() {
     h('button', { class: 'mnav', 'aria-label': 'Next month', disabled: em >= 0, onclick: () => { em = Math.min(0, em + 1); route(); } }, '›'));
   const left = (book.categories || []).filter(x => !x.isArchived && !c.budgets.some(b => b.cat && b.cat.localId === x.localId));
   return h('div', null, bookHeader('Budgets', ml), mn,
-    ed && (book.categories || []).some(x => !x.isArchived) ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: openBudgetTable }, c.budgets.length ? 'Edit all budgets' : '+ Set budgets') : null,
+    ed && (book.categories || []).some(x => !x.isArchived) ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => openBudgetTable() }, c.budgets.length ? 'Edit all budgets' : '+ Set budgets') : null,
+    ed && (book.categories || []).some(x => !x.isArchived) ? h('button', { class: 'btn', style: { margin: '0 0 12px 8px' }, onclick: () => { const a = avg3Budgets(); if (!Object.keys(a).length) return toast('No spending in the previous 3 months to average', true); openBudgetTable(a); } }, '📊 Fill from last 3 months’ average') : null,
     c.budgets.length ? h('div', { class: 'list' }, c.budgets.map(b => { const p = b.cap > 0 ? b.spent / b.cap * 100 : 0;
       return h('div', { class: 'item' + (ed ? ' clk' : ''), role: ed ? 'button' : null, tabindex: ed ? 0 : null, onclick: ed && b.cat ? () => openBudget(b.cat, b.cap) : null, onkeydown: e => { if (ed && b.cat && e.key === 'Enter') openBudget(b.cat, b.cap); } },
         h('div', { class: 'irow' }, h('div', { class: 'iname' }, b.cat ? b.cat.name : 'Category'), h('div', { class: 'ival ' + (p > 100 ? 'down' : '') }, Math.round(p) + '%')),
@@ -1672,6 +1784,43 @@ function pageWealthRecurring() {
 
 
 // ---------- Calendar reminders (optional): Google Calendar links and a .ics file ----------
+// Month grid of what falls due: expands each event's repeat rule (FREQ/INTERVAL/COUNT/UNTIL) into the viewed month.
+function occurrencesIn(e, y, m) {
+  const r = e.rrule || '', g = k => { const x = new RegExp(k + '=([^;]+)').exec(r); return x ? x[1] : null; };
+  const f = g('FREQ'), n = Math.max(1, +g('INTERVAL') || 1), cnt = g('COUNT') ? +g('COUNT') : Infinity, un = g('UNTIL');
+  const untilTs = un ? new Date(+un.slice(0, 4), +un.slice(4, 6) - 1, +un.slice(6, 8), 23, 59).getTime() : Infinity;
+  const lo = new Date(y, m, 1).getTime(), hi = new Date(y, m + 1, 1).getTime(), out = [];
+  if (!f) { if (e.date >= lo && e.date < hi) out.push(e.date); return out; }
+  let t = e.date, i = 0; const base = new Date(e.date);
+  while (i < cnt && t < hi && t <= untilTs && i < 5000) {
+    if (t >= lo) out.push(t);
+    i++;
+    if (f === 'DAILY') t = e.date + i * n * 86400000;
+    else if (f === 'WEEKLY') t = e.date + i * n * 7 * 86400000;
+    else { const d = new Date(base.getFullYear(), base.getMonth() + i * n * (f === 'YEARLY' ? 12 : 1), 1, base.getHours(), base.getMinutes()); d.setDate(Math.min(base.getDate(), new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); t = d.getTime(); }
+  }
+  return out;
+}
+let calMonth = null, calDay = null;
+function calGrid(ev, pref) {
+  const now = new Date(); if (!calMonth) calMonth = { y: now.getFullYear(), m: now.getMonth() };
+  const { y, m } = calMonth, days = new Date(y, m + 1, 0).getDate(), lead = new Date(y, m, 1).getDay();
+  const byDay = {}; ev.forEach(e => occurrencesIn(e, y, m).forEach(t => { const d = new Date(t).getDate(); (byDay[d] = byDay[d] || []).push(e); }));
+  const wrap = h('section', { class: 'card calgrid' });
+  const paint = () => {
+    const mv = k => { const d = new Date(y, m + k, 1); calMonth = { y: d.getFullYear(), m: d.getMonth() }; calDay = null; route(); };
+    const cells = []; for (let i = 0; i < lead; i++) cells.push(h('div', { class: 'cg-c empty' }));
+    for (let d = 1; d <= days; d++) { const n = (byDay[d] || []).length, isT = y === now.getFullYear() && m === now.getMonth() && d === now.getDate();
+      cells.push(h('button', { type: 'button', class: 'cg-c' + (n ? ' has' : '') + (isT ? ' today' : '') + (calDay === d ? ' sel' : ''), 'aria-label': d + ' ' + new Date(y, m, 1).toLocaleDateString('en-IN', { month: 'long' }) + (n ? ', ' + n + ' due' : ''), onclick: () => { calDay = calDay === d ? null : d; paint(); } }, h('span', null, d), n ? h('i', { class: 'cg-dot' }, n > 1 ? n : '') : null)); }
+    const sel = calDay && byDay[calDay] ? byDay[calDay] : [];
+    wrap.replaceChildren(
+      h('div', { class: 'monthbar' }, h('button', { class: 'mnav', 'aria-label': 'Previous month', onclick: () => mv(-1) }, '‹'), h('div', { class: 'mlabel' }, new Date(y, m, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })), h('button', { class: 'mnav', 'aria-label': 'Next month', onclick: () => mv(1) }, '›')),
+      h('div', { class: 'cg-grid' }, ['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(x => h('div', { class: 'cg-h' }, x)), cells),
+      calDay ? h('div', { class: 'cg-list' }, h('div', { class: 'flbl' }, calDay + ' ' + new Date(y, m, 1).toLocaleDateString('en-IN', { month: 'long' })),
+        sel.length ? sel.map(e => h('div', { class: 'irow' }, h('div', { class: 'iname' }, eventTitle(e, true).replace(/^Arthik: /, '')))) : h('p', { class: 'small' }, 'Nothing due this day.')) : h('p', { class: 'small' }, 'Tap a day with a dot to see what is due.'));
+  };
+  paint(); return wrap;
+}
 function pageCalendar() {
   const book = currentBook(); let pref = { amounts: false, lead: 1 };
   try { pref = { ...pref, ...JSON.parse(localStorage.getItem('arthik.cal') || '{}') }; } catch {}
@@ -1684,7 +1833,7 @@ function pageCalendar() {
   paintList();
   const dl = h('button', { class: 'btn primary', type: 'button', onclick: () => { const blob = new Blob([buildIcs(ev, { amounts: pref.amounts, leadDays: pref.lead })], { type: 'text/calendar' }); const a = h('a', { href: URL.createObjectURL(blob), download: 'arthik-reminders.ics' }); document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); toast('Calendar file downloaded'); } }, 'Download calendar file (.ics)');
   const sel = h('select', { 'aria-label': 'Remind me', onchange: e => { pref.lead = +e.target.value; save(); } }, [[0, 'On the day, 9 am'], [1, '1 day before, 9 am'], [3, '3 days before, 9 am']].map(([v, l]) => h('option', { value: v, selected: v === pref.lead }, l)));
-  return h('div', null, backLink('#/more', 'More'), bookHeader('Calendar reminders', 'Optional'),
+  return h('div', null, backLink('#/more', 'More'), bookHeader('Calendar reminders', 'Optional'), calGrid(ev, pref),
     h('p', { class: 'small' }, 'Arthik cannot send phone notifications, but your calendar can. Add the due dates below to Google Calendar (or any calendar app) and it will remind you. This is a one-time copy of the dates as they are today. If you add or change instalments, download it again.'),
     h('section', { class: 'card' }, toggleRow('Show amounts in the event titles (they will be visible in your calendar)', () => pref.amounts, v => { pref.amounts = v; save(); paintList(); }),
       h('div', { class: 'flbl' }, 'Remind me'), sel, h('div', { class: 'actions' }, dl),
@@ -1883,10 +2032,10 @@ function pageSettings() {
     h('section', { class: 'card' }, h('h2', null, 'Your data file'),
       h('p', null, 'Dropbox › Apps › Arthik › arthik-data.json'), h('p', { class: 'small' }, 'Last saved ' + (S.modified ? new Date(S.modified).toLocaleString('en-IN') : 'unknown') + (S.offline ? ' (offline copy)' : '')),
       h('p', { class: 'small' }, 'Download backup lets you choose which books to include, and whether the file is locked with your data password.'),
-      h('p', null, h('a', { class: 'btn', href: '#/trash' }, 'Recently deleted (' + (currentBook() ? trashItems(currentBook()).length : 0) + ')')),
       h('p', { class: 'small' }, `${wealthBooks(S.data).length} Wealth book(s) and ${ex.length} Expense book(s) in this file. Use the book picker at the top to switch.`),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: openBackup }, 'Download backup…'), canEdit() ? h('button', { class: 'btn', onclick: openChangePassword }, 'Change data password') : null, canEdit() ? h('button', { class: 'btn', onclick: () => openPickLists() }, 'Pick lists…') : null)),
     booksCard(),
+    canEdit() ? h('section', { class: 'card' }, h('h2', null, 'Live prices'), h('p', { class: 'small' }, 'Fetch current prices for stocks, funds, gold and silver.'), h('button', { class: 'btn', onclick: openPriceSettings }, 'Price settings…')) : null,
     (currentBook() && currentBook().bookType === 'EXPENSE') ? h('section', { class: 'card' }, h('h2', null, 'Manage this book'), h('p', { class: 'small' }, canEdit() ? 'Add, rename, recolour or archive.' : 'Sign in to Dropbox to make changes.'), h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/accounts' }, 'Accounts'), h('a', { class: 'btn', href: '#/categories' }, 'Categories'), h('a', { class: 'btn', href: '#/budgets' }, 'Budgets'))) : null,
     !S.enc ? null : h('section', { class: 'card' }, h('h2', null, 'Replace data'), h('p', { class: 'small' }, 'Load a newer Android backup over this file.'), h('button', { class: 'btn', onclick: () => screenSetup(true) }, 'Replace from a backup file')),
     h('section', { class: 'card' }, h('h2', null, 'Appearance'), h('div', { class: 'row' },

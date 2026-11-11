@@ -239,3 +239,40 @@ a.btn{display:inline-block;text-decoration:none;text-align:center}
 .tx.soft{background:color-mix(in srgb,var(--tc,var(--line2)) 11%,var(--card,#fff));border:1px solid color-mix(in srgb,var(--tc,var(--line2)) 22%,transparent);border-left:4px solid var(--tc,var(--line2));border-radius:12px;padding:9px 12px;margin:7px 0;box-shadow:0 1px 0 rgba(0,0,0,.04),0 6px 12px -8px rgba(0,0,0,.25)}
 .tx.soft:last-child{border-bottom:1px solid color-mix(in srgb,var(--tc,var(--line2)) 22%,transparent)}.tx.soft.clk:hover{background:color-mix(in srgb,var(--tc,var(--line2)) 18%,var(--card,#fff))}
 .txpic{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:20px;flex:0 0 auto;background:color-mix(in srgb,var(--tc,var(--line2)) 24%,#fff);box-shadow:inset 0 -2px 0 rgba(0,0,0,.08),0 2px 4px -2px rgba(0,0,0,.3)}
+
+.rngrow{margin-top:8px;align-items:end}.rng{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--mut,#667)}.rng input{min-width:0;width:130px}
+
+.cg-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:8px}.cg-h{text-align:center;font-size:11px;opacity:.6}
+.cg-c{position:relative;aspect-ratio:1;border:1px solid var(--line,#e3e6ee);border-radius:10px;background:transparent;color:inherit;font:inherit;padding:2px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer}
+.cg-c.empty{border:0;cursor:default}.cg-c.today{outline:2px solid var(--accent,#3b6cf6)}.cg-c.sel{background:var(--accent,#3b6cf6);color:#fff}
+.cg-dot{font-style:normal;min-width:14px;height:14px;border-radius:7px;background:#e8590c;color:#fff;font-size:10px;line-height:14px;text-align:center;margin-top:1px}
+.cg-c.has:not(.sel){font-weight:700}.cg-list{margin-top:10px}
+
+/* ---- v0.7.8 phone tidy-up ---- */
+.fbtn{display:none}
+@media (max-width:640px){
+  body{font-size:15px}
+  .top{margin-bottom:10px;padding-bottom:8px;flex-wrap:nowrap}.top h1{font-size:22px;margin:0}.top .btn.ghost{padding:6px 12px;min-height:34px;flex:0 0 auto}
+  .bookpick{height:38px;font-size:14px}
+  .fresh.old{font-size:12.5px;line-height:1.35;padding:8px 10px;display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center}.fresh.old .btn{padding:4px 10px;min-height:30px}
+  .tile3d{min-height:104px;padding:10px;border-radius:16px}.tile3d .iill,.tile3d img{max-height:34px;width:auto}
+  .grid{gap:8px}.tile{min-height:84px;padding:10px 12px}
+  .item{padding:11px 12px}
+  .filters{gap:8px}.filters input[type=search]{flex:1 1 150px}
+  .fbtn{display:inline-flex}
+  .fgrid,.rngrow{display:none}.fgrid.open{display:grid;grid-template-columns:1fr 1fr;gap:8px}.rngrow.open{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .fgrid select{width:100%;min-width:0;font-size:13px}.rng input{width:100%}.rngrow .btn{grid-column:1/-1}
+  .tabrow{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch}
+  .toast{bottom:76px;max-width:86vw;font-size:13px;padding:9px 14px;border-radius:14px}
+  .cg-grid{gap:3px}.cg-c{border-radius:8px;font-size:13px}
+  .sheet{max-height:92vh}
+  .actions{flex-wrap:wrap}
+}
+@media (min-width:641px){.fgrid,.rngrow{display:flex;flex-wrap:wrap;gap:10px}.rngrow{margin-top:8px}}
+.item>a.btn,.item>button.btn{align-self:flex-start;margin-top:4px}
+/* iPhone date boxes: stop them overflowing / overlapping their neighbour */
+input[type=date]{-webkit-appearance:none;appearance:none;display:block;width:100%;min-width:0;max-width:100%;box-sizing:border-box;text-align:left;min-height:46px;line-height:1.2}
+input[type=date]::-webkit-date-and-time-value{text-align:left;min-height:1.2em}
+@media (max-width:480px){.two{grid-template-columns:1fr}}
+.link+.btn,a.link+.btn,.btn+.link{margin-left:10px}
+a.link[href="#/settings"]{display:inline-block;margin:2px 0 0}a.link[href="#/settings"]+.btn{display:flex;width:max-content}
