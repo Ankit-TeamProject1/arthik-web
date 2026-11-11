@@ -3,7 +3,8 @@ import * as dbx from './dropbox.js';
 import { optionList, sameName, KIND_LABEL } from './lists.js';
 import { encrypt, decrypt, isEncrypted } from './crypto.js';
 import { loanEmi, loanSchedule } from './calc.js';
-import { stockPrice, marketPrices, metalRates, caratRate } from './prices.js';
+import { monthSeries, monthInsights, wealthHealth, monthName } from './insights.js';
+import { stockPrice, marketPrices, metalRates, caratRate, testRelay } from './prices.js';
 import { RTYPES, recurringItems, eventItems, allDue, confirmInBook, declineInBook, rentPending, calendarEvents, buildIcs, googleLink, eventTitle } from './recurring.js';
 import { readFile, parseStatement, parseTemplate, planUpdate, applyUpdate, newUid, planImport2 as planImport, applyImport2 as applyImport, buildHoldingsXlsx, classify, planOptionOf, KINDS, KIND_NAME } from './broker.js';
 import { GOAL_MAP, assetLabel, utcMonth, CATS, computeBook, computeExpense, activeBooks, wealthBooks, expenseBooks, setCurrency, setMask, money, pct, fmtDate, metalLabel, price2 } from './model.js';
@@ -202,6 +203,7 @@ function route() {
   else if (isExp && page === 'transactions') body = pageEntries();
   else if (page === 'more') body = pageMore();
   else if (page === 'calendar') body = pageCalendar();
+  else if (page === 'insights') body = pageInsights();
   else if (isExp && page === 'budgets') body = pageBudgets();
   else if (isExp && page === 'recurring') body = pageRecurring();
   else if (isExp && page === 'accounts') body = pageAccounts();
@@ -294,10 +296,71 @@ const mask = (t) => (hidden() ? '••••••' : t);
 
 function pageMore() {
   const book = currentBook(), isExp = book.bookType === 'EXPENSE', c = computed();
-  const links = isExp ? [['#/budgets', 'Budgets', 'Monthly limits per category'], ['#/calendar', 'Calendar reminders', 'Add due dates to Google Calendar (optional)'], ['#/settings', 'Settings', 'Accounts, categories, backup, theme'], ['#/trash', 'Recently deleted', trashItems(book).length + ' item(s) you can restore']]
-    : [['#/goals', 'Goals', 'Savings goals and progress'], ['#/rent', 'Rent', 'Properties you rent out'], ['#/calendar', 'Calendar reminders', 'Add due dates to Google Calendar (optional)'], ['#/settings', 'Settings', 'Backup, theme, your data file'], ['#/trash', 'Recently deleted', trashItems(book).length + ' item(s) you can restore']];
+  const links = isExp ? [['#/insights', 'Insights', 'This month vs last, charts, print'], ['#/budgets', 'Budgets', 'Monthly limits per category'], ['#/calendar', 'Calendar reminders', 'Add due dates to Google Calendar (optional)'], ['#/settings', 'Settings', 'Accounts, categories, backup, theme'], ['#/trash', 'Recently deleted', trashItems(book).length + ' item(s) you can restore']]
+    : [['#/insights', 'Insights & health', 'Financial health, Net Worth chart, print'], ['#/goals', 'Goals', 'Savings goals and progress'], ['#/rent', 'Rent', 'Properties you rent out'], ['#/calendar', 'Calendar reminders', 'Add due dates to Google Calendar (optional)'], ['#/settings', 'Settings', 'Backup, theme, your data file'], ['#/trash', 'Recently deleted', trashItems(book).length + ' item(s) you can restore']];
   return h('div', null, bookHeader('More', book.name), h('div', { class: 'list' }, links.map(([href, t, sub]) => h('a', { class: 'item clk morelink', href }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, t), h('div', { class: 'ival' }, '›')), h('div', { class: 'isub' }, sub)))));
 }
+// ---------- Insights (v0.8): month comparison, charts, financial health, print ----------
+const short = n => { n = Math.abs(n); return n >= 1e7 ? (n / 1e7).toFixed(1).replace(/\.0$/, '') + 'Cr' : n >= 1e5 ? (n / 1e5).toFixed(1).replace(/\.0$/, '') + 'L' : n >= 1e3 ? (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k' : String(Math.round(n)); };
+function barChart(series) {
+  const W = 600, H = 230, top = 22, bot = 28, max = Math.max(1, ...series.map(s => Math.max(s.spent, s.income))), ph = H - top - bot, gw = W / series.length;
+  const s = svg('svg', { viewBox: `0 0 ${W} ${H}`, class: 'bars', role: 'img', 'aria-label': 'Spent and income by month' });
+  [0, .5, 1].forEach(f => s.append(svg('line', { x1: 0, x2: W, y1: top + ph * (1 - f), y2: top + ph * (1 - f), stroke: 'rgba(128,128,128,.25)', 'stroke-width': 1 })));
+  series.forEach((m, i) => { const x = i * gw + gw * .14, bw = gw * .34;
+    [[m.spent, '#e5484d', 0], [m.income, '#30a46c', 1]].forEach(([v, col, k]) => { const bh = v / max * ph, bx = x + k * (bw + 4);
+      s.append(svg('rect', { x: bx, y: top + ph - bh, width: bw, height: Math.max(bh, v > 0 ? 2 : 0), rx: 4, fill: col }));
+      if (v > 0) { const t = svg('text', { x: bx + bw / 2, y: top + ph - bh - 5, 'text-anchor': 'middle', 'font-size': 13, fill: 'currentColor' }); t.textContent = short(v); s.append(t); } });
+    const l = svg('text', { x: i * gw + gw / 2, y: H - 8, 'text-anchor': 'middle', 'font-size': 14, fill: 'currentColor', opacity: .75 }); l.textContent = m.label; s.append(l); });
+  return s;
+}
+const chg = (now, before) => before > 0 ? (now - before) / before * 100 : (now > 0 ? null : 0);
+const arrow = (p, goodWhenDown) => p == null ? h('span', { class: 'small' }, 'new') : h('span', { class: 'cmp ' + ((p > 0) === !!goodWhenDown ? 'down' : 'up') + (Math.abs(p) < 1 ? ' flat' : '') }, (p > 0 ? '▲ ' : p < 0 ? '▼ ' : '') + Math.abs(Math.round(p)) + '%');
+function healthRows(hh) {
+  const ic = { good: '✅', ok: '🟡', low: '🔴', na: '⚪' };
+  return hh.items.map(i => h('div', { class: 'hrow ' + i.status }, h('div', { class: 'hic' }, ic[i.status]), h('div', null, h('div', { class: 'iname' }, i.label), h('div', { class: 'isub' }, i.value), h('div', { class: 'tip' }, i.tip))));
+}
+const healthOf = book => wealthHealth(book, expenseBooks(S.data), S.data.rateHistory || []);
+function healthCard(book, full) {
+  const hh = healthOf(book), tone = hh.score == null ? '' : hh.score >= 70 ? 'up' : hh.score >= 40 ? 'amb' : 'down';
+  return h('section', { class: 'card health' }, h('div', { class: 'irow' }, h('h2', { style: { margin: 0 } }, 'Financial health'), hh.score == null ? null : h('div', { class: 'score ' + tone }, hh.score + '/100')),
+    full ? h('div', null, healthRows(hh), h('p', { class: 'small' }, 'A guide only, worked out from your own entries: bank and cash against your usual spending, debts against assets, and savings from your Expense books.'))
+         : h('div', null, h('p', { class: 'small' }, hh.score == null ? 'Add some assets and Expense entries to see your score.' : hh.items.filter(i => i.status === 'low').length ? 'Needs attention: ' + hh.items.filter(i => i.status === 'low').map(i => i.label.toLowerCase()).join(', ') + '.' : 'Looking healthy on the checks that can be measured.'), h('a', { href: '#/insights', class: 'link' }, 'See details ›')));
+}
+function pageInsights() {
+  const book = currentBook(), isExp = book.bookType === 'EXPENSE';
+  const print = h('button', { class: 'btn noprint', type: 'button', onclick: () => window.print() }, '🖨 Print / Save as PDF');
+  if (!isExp) {
+    const c = computed();
+    return h('div', null, backLink('#/dashboard', 'Home'), bookHeader('Insights', book.name), h('div', { class: 'row noprint' }, print),
+      healthCard(book, true),
+      h('section', { class: 'card' }, h('h2', null, 'Net Worth over time'), h('div', { class: 'big2' }, money(c.netWorth)), h('div', { class: 'big-trend' }, trend(book, c.netWorth))),
+      h('section', { class: 'card alloc' }, donut(c).svg, h('ul', { class: 'legend' }, donut(c).parts.sort((a, b) => b.total - a.total).map(p => h('li', null, h('span', { class: 'sw', style: { background: p.color } }), p.label + ' ' + money(p.total))))),
+      h('p', { class: 'small printonly' }, 'Printed from Arthik on ' + new Date().toLocaleDateString('en-IN')));
+  }
+  const now = monthNow(), I = monthInsights(book, now), series = monthSeries(book, now, 6), ml = monthLabel(em);
+  const mn = h('div', { class: 'monthbar noprint' },
+    h('button', { class: 'mnav', 'aria-label': 'Previous month', onclick: () => { em -= 1; route(); } }, '‹'),
+    h('div', { class: 'mlabel' }, ml, em ? h('button', { class: 'link', onclick: () => { em = 0; route(); } }, 'Back to this month') : ''),
+    h('button', { class: 'mnav', 'aria-label': 'Next month', disabled: em >= 0, onclick: () => { em = Math.min(0, em + 1); route(); } }, '›'));
+  const rise = I.categories.map(x => ({ ...x, d: x.now - x.before })).sort((a, b) => b.d - a.d)[0], sp = chg(I.spent, I.pSpent);
+  const said = !I.spent && !I.income ? 'No entries in ' + ml + '.' : (I.pSpent > 0 && sp != null ? `You spent ${Math.abs(Math.round(sp))}% ${sp > 0 ? 'more' : sp < 0 ? 'less' : 'the same'} than last month` + (rise && rise.d > 0 && sp > 0 ? `, mostly on ${rise.name} (+${money(rise.d)}).` : '.') : `You spent ${money(I.spent)} in ${ml}.`);
+  const maxC = Math.max(1, ...I.categories.map(x => Math.max(x.now, x.before)));
+  const cc = catColors(computed());
+  const stat = (lbl, val, sub) => h('div', { class: 'stat' }, h('div', { class: 'lbl' }, lbl), h('div', { class: 'sval' }, val), sub ? h('div', { class: 'small' }, sub) : null);
+  return h('div', null, bookHeader('Insights', ml), mn, h('div', { class: 'row noprint' }, print),
+    h('section', { class: 'card' }, h('p', { class: 'said' }, said),
+      h('div', { class: 'stats' }, stat('Spent', money(I.spent), I.pSpent ? [arrow(chg(I.spent, I.pSpent), true), ' vs ' + money(I.pSpent) + ' last month'] : null),
+        stat('Income', money(I.income), I.pIncome ? [arrow(chg(I.income, I.pIncome), false), ' vs last month'] : null),
+        stat('Saved', money(I.saved), I.rate == null ? 'No income recorded' : Math.round(I.rate) + '% of income'),
+        stat('Per day', money(Math.round(I.perDay)), I.projected != null ? 'Month-end estimate ' + money(Math.round(I.projected)) : null))),
+    h('section', { class: 'card' }, h('h2', null, 'Last 6 months'), barChart(series), h('div', { class: 'keyrow' }, h('span', null, h('i', { class: 'kd', style: { background: '#e5484d' } }), 'Spent'), h('span', null, h('i', { class: 'kd', style: { background: '#30a46c' } }), 'Income'))),
+    h('section', { class: 'card' }, h('h2', null, 'Categories vs last month'),
+      I.categories.length ? I.categories.map(x => h('div', { class: 'crow' }, h('div', { class: 'irow' }, h('div', { class: 'iname' }, x.name), h('div', { class: 'ival' }, money(x.now), ' ', arrow(chg(x.now, x.before), true))),
+        h('div', { class: 'bar' }, h('span', { style: { width: (x.now / maxC * 100) + '%', background: cc[x.id] || null } })), x.before ? h('div', { class: 'small' }, 'Last month ' + money(x.before)) : null)) : h('p', { class: 'empty' }, 'No spending in ' + ml + '.')),
+    I.biggest.length ? h('section', { class: 'card' }, h('h2', null, 'Biggest expenses'), I.biggest.map(t => h('div', { class: 'irow brow2' }, h('div', null, h('div', { class: 'iname' }, (computed().cat[t.categoryLocalId] || {}).name || 'No category'), h('div', { class: 'small' }, [fmtDate(t.occurredAt), t.note].filter(Boolean).join(' · '))), h('div', { class: 'ival down' }, money(t.amount))))) : null,
+    h('p', { class: 'small printonly' }, 'Printed from Arthik on ' + new Date().toLocaleDateString('en-IN')));
+}
+
 function pageDashboard() {
   const c = computed(), book = currentBook();
   const d = donut(c);
@@ -322,6 +385,7 @@ function pageDashboard() {
       change !== null && !hidden() ? h('div', { class: 'tnote ' + (change >= 0 ? 'up' : 'down') }, pct(change) + ' vs about a month ago') : null,
       hidden() ? null : trend(book, c.netWorth)),
     h('section', { class: 'card alloc' }, d.svg, h('ul', { class: 'legend' }, d.parts.sort((a, b) => b.total - a.total).map(p => h('li', null, h('span', { class: 'sw', style: { background: p.color } }), `${p.label} ${(p.total / d.tot * 100).toFixed(1)}%`))))),
+    healthCard(book, false),
     h('h2', null, 'Categories'), h('div', { class: 'grid g3d' }, tiles),
     comingUp(book),
     h('div', { class: 'small' }, 'Prices are the last ones saved. Use Refresh prices on Investments to update them.'));
@@ -389,9 +453,16 @@ function itemCard(it, key, look, pick) {
     (it.lines || []).map(l => h('div', { class: 'iline' }, l)));
 }
 
+// "Last updated" line shown at the top of Investments and Gold & Silver.
+const fmtStamp = ts => new Date(ts).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+function syncLine(kind) {
+  const cfg = priceCfg(), book = currentBook(); let ts = kind === 'metal' ? cfg.metalAt : cfg.marketAt;
+  if (!ts && book) { const arr = kind === 'metal' ? (book.metalHoldings || []).map(x => x.lastUpdatedAt) : (book.brokerHoldings || []).map(x => x.priceDate); ts = Math.max(0, ...arr.filter(Boolean)); }
+  return h('div', { class: 'synced' }, ts ? '🔄 ' + (kind === 'metal' ? 'Gold & silver rates' : 'Prices') + ' last updated: ' + fmtStamp(ts) : '🔄 ' + (kind === 'metal' ? 'Gold & silver rates' : 'Prices') + ' not updated yet');
+}
 function pageCategory(key) {
   const c = computed(), cat = c.byKey[key] || c.cats[0];
-  return h('div', null, backLink('#/dashboard', 'Home'), bookHeader(cat.label, 'Wealth'),
+  return h('div', null, backLink('#/dashboard', 'Home'), bookHeader(cat.label, 'Wealth'), cat.key === 'metal' ? syncLine('metal') : null,
     h('section', null, h('div', { class: 'lbl' }, 'Counted toward Net Worth'), h('div', { class: 'big2' }, money(cat.total))),
     canEdit() && WSPEC[cat.key] ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: () => openWealth(cat.key, null) }, '+ Add ' + WSPEC[cat.key].noun) : null,
     canEdit() && cat.key === 'cash' ? h('button', { class: 'btn primary', style: { margin: '0 0 12px' }, onclick: openCash }, 'Update cash in hand') : null,
@@ -434,7 +505,7 @@ async function syncMarket(manual) {
     if (manual) toast('Fetching prices…');
     const r = await marketPrices(all, priceCfg().relay);
     if (r.blocked) { priceHint = 'Live prices need the price relay. Set it up in Settings › Prices.'; toast(priceHint, true); route(); return; }
-    if (r.prices.size) await mutate(d => { const now = Date.now(); wealthBooks(d).forEach(b => (b.brokerHoldings || []).forEach(x => { const p = r.prices.get(x.uid); if (p) { x.price = p; x.priceDate = now; } })); });
+    if (r.prices.size) await mutate(d => { const now = Date.now(); d.priceSettings = { ...(d.priceSettings || {}), marketAt: now }; wealthBooks(d).forEach(b => (b.brokerHoldings || []).forEach(x => { const p = r.prices.get(x.uid); if (p) { x.price = p; x.priceDate = now; } })); });
     toast(r.prices.size + ' prices updated ✓' + (r.failed.length ? ' · ' + r.failed.length + ' could not be fetched (old price kept). Reason: ' + (r.why || []).slice(0, 2).join('; ') : ''), !!r.failed.length && !r.prices.size);
     view.cache = null; route();
   } catch (e) { toast('Prices: ' + e.message, true); }
@@ -451,7 +522,7 @@ function openPriceSettings() {
       h('p', { class: 'small' }, 'Stocks, ETFs and mutual funds use free Yahoo and AMFI data; gold and silver use GoldAPI.io (your own free key). Browsers block these sites, so a tiny free “price relay” is needed — the setup code is in the file relay-worker.js in this app’s zip.'),
       h('div', { class: 'flbl' }, 'Price relay address'), relay, h('div', { class: 'flbl' }, 'GoldAPI key (stored encrypted in your data file)'), key,
       h('p', { class: 'small' }, c.metalAt ? 'Gold & silver last updated ' + new Date(c.metalAt).toLocaleString('en-IN') + '. They refresh once a day on your first sign-in.' : 'Gold & silver refresh once a day on your first sign-in, once a key is saved.'),
-      h('div', { class: 'actions' }, save, h('button', { type: 'button', class: 'btn', onclick: () => { api.close(); syncMetals(false); } }, 'Sync gold & silver now'), h('button', { type: 'button', class: 'btn', onclick: () => { api.close(); syncMarket(true); } }, 'Refresh stocks & funds now')));
+      h('div', { class: 'actions' }, save, h('button', { type: 'button', class: 'btn', onclick: async e => { const b = e.currentTarget; b.textContent = 'Testing…'; try { const p = await testRelay(relay.value.trim().replace(/\/+$/, '')); toast('Relay works ✓ (TCS ₹' + p + ')'); } catch (er) { toast(er.message, true); } b.textContent = 'Test relay'; } }, 'Test relay'), h('button', { type: 'button', class: 'btn', onclick: () => { api.close(); syncMetals(false); } }, 'Sync gold & silver now'), h('button', { type: 'button', class: 'btn', onclick: () => { api.close(); syncMarket(true); } }, 'Refresh stocks & funds now')));
   });
 }
 
@@ -469,7 +540,7 @@ function pageInvest() {
   const val = cnt(list).reduce((a, i) => a + i.value, 0), cost = cnt(list).reduce((a, i) => a + (i.cost || 0), 0), gain = cost > 0 ? (val - cost) / cost * 100 : null;
   const tab = (label, on, fn, n) => h('button', { type: 'button', class: 'chip2' + (on ? ' on' : ''), onclick: () => { fn(); route(); } }, label, n != null ? h('span', { class: 'cnt' }, ' ' + n) : null);
   if (canEdit() && !priceBusy && Date.now() - marketAt > 5 * 60000 && all.length) setTimeout(() => syncMarket(false), 50);
-  return h('div', null, backLink('#/dashboard', 'Home'), bookHeader('Investments', 'Mutual funds, stocks, SGB, ETF and bonds'),
+  return h('div', null, backLink('#/dashboard', 'Home'), bookHeader('Investments', 'Mutual funds, stocks, SGB, ETF and bonds'), syncLine('market'),
     canEdit() ? h('div', { class: 'row', style: { margin: '0 0 8px' } }, h('button', { class: 'btn', onclick: () => syncMarket(true) }, '🔄 Refresh prices'), h('button', { class: 'link', onclick: openPriceSettings }, 'Price settings')) : null, priceHint ? h('p', { class: 'small' }, priceHint) : null,
     h('section', null, h('div', { class: 'lbl' }, 'Value' + (invBroker ? ' · ' + (invBroker === '-' ? 'not linked' : acctLabel(invBroker)) : '') + (invKind ? ' · ' + KIND_NAME[invKind] : '')), h('div', { class: 'big2' }, money(val)),
       h('div', { class: 'isub' }, 'Invested ' + money(cost) + (gain === null ? '' : ' · ' + (val >= cost ? 'Gain ' : 'Loss ') + money(Math.abs(val - cost)) + ' (' + pct(gain) + ')'))),
@@ -1557,6 +1628,7 @@ function pageExpenseDashboard() {
     cur ? settleBox(c) : null,
     h('h2', null, 'Recent entries'),
     h('section', { class: 'card' }, c.txs.slice(0, 10).map(t => txRow(t, c)), c.txs.length ? h('a', { href: '#/transactions', class: 'btn ghost' }, 'See all entries') : h('p', null, canEdit() ? 'No entries yet. Tap the + button to add your first one.' : 'No entries yet.')),
+    h('a', { class: 'btn insl', href: '#/insights' }, '📊 Insights — compare months, charts, print'),
     comingUp(book));
 }
 

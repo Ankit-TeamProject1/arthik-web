@@ -276,3 +276,22 @@ input[type=date]::-webkit-date-and-time-value{text-align:left;min-height:1.2em}
 @media (max-width:480px){.two{grid-template-columns:1fr}}
 .link+.btn,a.link+.btn,.btn+.link{margin-left:10px}
 a.link[href="#/settings"]{display:inline-block;margin:2px 0 0}a.link[href="#/settings"]+.btn{display:flex;width:max-content}
+/* iPhone: never let one wide row stretch the whole page */
+html,body{overflow-x:hidden;max-width:100%}
+.layout{width:100%;max-width:100vw;min-width:0}
+.main{min-width:0;box-sizing:border-box;overflow-x:hidden}.main>*{min-width:0;max-width:100%}
+.tabrow{max-width:100%;min-width:0}.row{flex-wrap:wrap}
+.top>div{min-width:0}.bookpick{max-width:100%;min-width:0;box-sizing:border-box}
+.synced{font-size:13px;color:var(--mut);margin:0 0 10px}
+
+/* ---- v0.8 insights ---- */
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}.stat .sval{font-size:22px;font-weight:600;color:var(--ink2)}.stat .lbl{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px}
+.said{font-size:16px;margin:0;color:var(--ink2)}.bars{width:100%;height:auto;color:var(--ink);margin-top:6px}
+.keyrow{display:flex;gap:16px;font-size:13px;color:var(--mut)}.kd{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px}
+.cmp{font-size:12px;font-weight:600}.cmp.up{color:var(--up)}.cmp.down{color:var(--down)}.cmp.flat{color:var(--mut)}
+.crow{padding:8px 0;border-bottom:1px solid var(--line)}.crow:last-child{border:0}.crow .bar{margin:4px 0}
+.brow2{padding:8px 0;border-bottom:1px solid var(--line);align-items:center}.brow2:last-child{border:0}
+.health .score{font-size:20px;font-weight:700;padding:2px 12px;border-radius:14px;background:var(--soft)}.health .score.up{color:var(--up)}.health .score.amb{color:var(--amber)}.health .score.down{color:var(--down)}
+.hrow{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.hrow:last-of-type{border:0}.hic{font-size:20px}.hrow .tip{font-size:12px;color:var(--mut);margin-top:2px}
+.big-trend .trend{height:190px}.insl{display:flex;margin:12px 0;justify-content:center}.printonly{display:none}
+@media print{.noprint,.insl{display:none!important}.printonly{display:block}.card{box-shadow:none!important;break-inside:avoid;border:1px solid #ccc}body{font-size:12px}.main{padding:0}}
