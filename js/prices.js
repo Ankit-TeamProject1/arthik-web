@@ -50,12 +50,12 @@ export const caratRate = (m, rates) => { const x = m.metalType === 'SILVER' ? ra
 
 // Stocks, ETFs and funds. Returns { prices: Map(uid -> price), failed: [names], skipped }
 export async function marketPrices(holdings, relay) {
-  const prices = new Map(), failed = []; const live = holdings.filter(x => !x.isArchived);
+  const prices = new Map(), failed = [], why = new Set(); const live = holdings.filter(x => !x.isArchived);
   const mf = live.filter(x => x.kind === 'MF'), st = live.filter(x => x.kind === 'STOCK' || x.kind === 'ETF');
   let nav = null;
-  if (mf.length) { try { nav = await amfiNavs(relay); } catch (e) { mf.forEach(x => failed.push(x.name)); if (e.blocked) return { prices: prices, failed, blocked: true }; } }
-  if (nav) mf.forEach(x => { const p = (x.amfi && nav.byCode[String(x.amfi).trim()]) || (x.isin && nav.byIsin[String(x.isin).trim()]); if (p) prices.set(x.uid, p); else failed.push(x.name); });
+  if (mf.length) { try { nav = await amfiNavs(relay); } catch (e) { why.add('Fund NAV file: ' + e.message); mf.forEach(x => failed.push(x.name)); if (e.blocked) return { prices: prices, failed, why: [...why], blocked: true }; } }
+  if (nav) mf.forEach(x => { const p = (x.amfi && nav.byCode[String(x.amfi).trim()]) || (x.isin && nav.byIsin[String(x.isin).trim()]); if (p) prices.set(x.uid, p); else { failed.push(x.name); why.add('Fund not found in the NAV file (needs AMFI code or ISIN)'); } });
   let blocked = false;
-  await Promise.all(st.map(async x => { try { let p; try { p = await stockPrice(x.name, x.exchange || 'NSE', relay); } catch (e) { if (x.exchange || e.blocked || !/No price|HTTP 404/.test(e.message)) throw e; p = await stockPrice(x.name, 'BSE', relay); } prices.set(x.uid, p); } catch (e) { failed.push(x.name); if (e.blocked) blocked = true; } }));
-  return { prices, failed, blocked };
+  await Promise.all(st.map(async x => { try { let p; try { p = await stockPrice(x.name, x.exchange || 'NSE', relay); } catch (e) { if (x.exchange || e.blocked || !/No price|HTTP 404/.test(e.message)) throw e; p = await stockPrice(x.name, 'BSE', relay); } prices.set(x.uid, p); } catch (e) { failed.push(x.name); why.add('Stock price: ' + e.message); if (e.blocked) blocked = true; } }));
+  return { prices, failed, why: [...why], blocked };
 }

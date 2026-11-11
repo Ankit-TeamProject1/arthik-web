@@ -435,7 +435,7 @@ async function syncMarket(manual) {
     const r = await marketPrices(all, priceCfg().relay);
     if (r.blocked) { priceHint = 'Live prices need the price relay. Set it up in Settings › Prices.'; toast(priceHint, true); route(); return; }
     if (r.prices.size) await mutate(d => { const now = Date.now(); wealthBooks(d).forEach(b => (b.brokerHoldings || []).forEach(x => { const p = r.prices.get(x.uid); if (p) { x.price = p; x.priceDate = now; } })); });
-    toast(r.prices.size + ' prices updated ✓' + (r.failed.length ? ' · could not fetch: ' + r.failed.slice(0, 5).join(', ') + (r.failed.length > 5 ? ' +' + (r.failed.length - 5) + ' more' : '') + ' (old price kept)' : ''), !!r.failed.length && !r.prices.size);
+    toast(r.prices.size + ' prices updated ✓' + (r.failed.length ? ' · ' + r.failed.length + ' could not be fetched (old price kept). Reason: ' + (r.why || []).slice(0, 2).join('; ') : ''), !!r.failed.length && !r.prices.size);
     view.cache = null; route();
   } catch (e) { toast('Prices: ' + e.message, true); }
   finally { priceBusy = false; }
@@ -479,6 +479,10 @@ function pageInvest() {
     invSel.on ? invSelBar(list) : null,
     canEdit() && legacyList(currentBook()).length ? h('div', { class: 'okbox' }, h('b', null, legacyList(currentBook()).length + ' older entr' + (legacyList(currentBook()).length > 1 ? 'ies' : 'y') + ' in the old format. '), 'Move them into the new list to manage everything in one place. ', h('button', { class: 'btn', type: 'button', onclick: openConvertOld }, 'Move to new list')) : null,
     accts.length || unlinked ? h('div', { class: 'tabrow', role: 'tablist', 'aria-label': 'Account' }, tab('All accounts', !invBroker, () => { invBroker = ''; }), accts.map(b => tab(acctLabel(b), b.toLowerCase() === invBroker.toLowerCase(), () => { invBroker = b; })), unlinked && accts.length ? tab('Not linked', invBroker === '-', () => { invBroker = '-'; }) : null, canEdit() ? h('button', { type: 'button', class: 'chip2 addacc', onclick: openAddAccount }, '+ Account') : null) : (canEdit() ? h('div', { class: 'tabrow' }, h('button', { type: 'button', class: 'chip2 addacc', onclick: openAddAccount }, '+ Account')) : null),
+    canEdit() && invBroker && invBroker !== '-' ? h('div', { class: 'row', style: { margin: '4px 0 8px' } }, h('span', { class: 'small' }, 'Account: ' + acctLabel(invBroker)),
+      h('button', { class: 'btn danger', type: 'button', onclick: () => { if (byB.length) return toast('This account still has ' + byB.length + ' holding(s). Delete or move them first (Select), then remove the account.', true);
+        if (!confirm('Remove the account “' + acctLabel(invBroker) + '”? It has no holdings.')) return; const key = invBroker.toLowerCase();
+        mutateWealth(b => { b.brokerAccounts = (b.brokerAccounts || []).filter(x => acctKey(x.broker, x.accountId).toLowerCase() !== key); }).then(() => { invBroker = ''; toast('Account removed ✓'); route(); }).catch(e => toast(e.message, true)); } }, 'Remove this account')) : null,
     kinds.length ? h('div', { class: 'tabrow', role: 'tablist', 'aria-label': 'Type' }, tab('All', !invKind, () => { invKind = ''; }, byB.length), kinds.map(([k, l, a]) => { const b = tab(l, invKind === k, () => { invKind = k; }, a.length); b.style.setProperty('--kc', (KIND_LOOK[k] || KIND_LOOK.OTHER)[0]); b.classList.add('kc'); return b; })) : null,
     list.length > 1 ? sortBar() : null,
     list.length ? h('div', { class: 'list' }, sortItems(list).map(it => { const look = KIND_LOOK[kindOf(it)] || KIND_LOOK.OTHER; if (!invSel.on) return itemCard(it, it.hold ? 'hold' : it._cat, look);
